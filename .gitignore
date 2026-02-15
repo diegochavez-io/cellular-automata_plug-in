@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment Variables
+.env
+.env.local
+
+# Models & LoRAs (large files)
+loras/*.safetensors
+*.safetensors
+*.ckpt
+*.pth
+*.bin
+
+# DayDream Scope
+.daydream-scope/
+
+# Docker
+.dockerignore
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# Secrets (keep these out of git!)
+*.key
+*.pem
+credentials.json
+secrets/
+
+# MCP Server (if you want to keep API keys private)
+# Uncomment if you don't want to share your MCP config
+# ~/.claude/mcp_settings.json

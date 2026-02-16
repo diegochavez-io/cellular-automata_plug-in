@@ -7,24 +7,21 @@ Usage:
 Examples:
     python -m cellular_automata
     python -m cellular_automata orbium
-    python -m cellular_automata cardiac --size 256
-    python -m cellular_automata geminium --window 1200x1200
+    python -m cellular_automata classic_life --size 512
+    python -m cellular_automata gs_maze --window 1200x1200
 
-Presets:
-    orbium      - Gliding organism (default)
-    geminium    - Self-replicating pattern
-    scutium     - Shield-shaped structures
-    aquarium    - Rich ecosystem
-    mitosis     - Blob division
-    dual_ring   - Two-ring interference
-    coral       - Branching growth
-    cardiac     - Spiral waves
-    primordial  - Self-organizing chaos
+Engines:
+    lenia       - Continuous CA with smooth kernels (default)
+    life        - Game of Life and variants (B/S rules)
+    excitable   - Greenberg-Hastings excitable media
+    gray_scott  - Gray-Scott reaction-diffusion
+
+Use --list to see all available presets.
 """
 
 import sys
 from .viewer import Viewer
-from .presets import PRESET_ORDER, list_presets
+from .presets import PRESET_ORDER, ENGINE_ORDER, list_presets
 
 
 def main():
@@ -45,8 +42,10 @@ def main():
             i += 2
         elif arg == "--list":
             print("\nAvailable presets:")
-            for key, name, desc in list_presets():
-                print(f"  {key:14s} {name:20s} {desc}")
+            for engine in ENGINE_ORDER:
+                print(f"\n  [{engine}]")
+                for key, name, desc in list_presets(engine):
+                    print(f"    {key:16s} {name:20s} {desc}")
             print()
             return
         elif arg in ("--help", "-h"):
@@ -57,7 +56,7 @@ def main():
             i += 1
         else:
             print(f"Unknown argument: {arg}")
-            print(f"Available presets: {', '.join(PRESET_ORDER)}")
+            print(f"Use --list to see available presets")
             return
 
     print(f"Starting Cellular Automata Viewer")

@@ -11,9 +11,14 @@ Reference: Bert Chan, "Lenia - Biology of Artificial Life" (2020)
 """
 
 import numpy as np
+from .engine_base import CAEngine
 
 
-class Lenia:
+class Lenia(CAEngine):
+
+    engine_name = "lenia"
+    engine_label = "Lenia"
+
     def __init__(self, size=512, R=13, T=10, mu=0.15, sigma=0.017,
                  kernel_peaks=None, kernel_widths=None):
         """
@@ -26,7 +31,7 @@ class Lenia:
             kernel_peaks: List of radial peak positions for kernel rings [0-1]
             kernel_widths: List of widths for each kernel ring
         """
-        self.size = size
+        super().__init__(size)
         self.R = R
         self.T = T
         self.mu = mu
@@ -35,9 +40,7 @@ class Lenia:
         self.kernel_peaks = kernel_peaks or [0.5]
         self.kernel_widths = kernel_widths or [0.15]
 
-        self.world = np.zeros((size, size), dtype=np.float64)
         self._build_kernel()
-        self.generation = 0
 
     def _bell(self, x, center, width):
         """Gaussian bell curve"""
@@ -88,14 +91,12 @@ class Lenia:
         self.generation += 1
         return self.world
 
-    def step_n(self, n):
-        """Advance n steps. Returns final state."""
-        for _ in range(n):
-            self.step()
-        return self.world
+    def apply_feedback(self, feedback):
+        """Add feedback directly to the continuous world state."""
+        self.world = np.clip(self.world + feedback, 0.0, 1.0)
 
     def set_params(self, mu=None, sigma=None, T=None, R=None,
-                   kernel_peaks=None, kernel_widths=None):
+                   kernel_peaks=None, kernel_widths=None, **_kw):
         """Update parameters. Rebuilds kernel if R or kernel shape changes."""
         rebuild = False
 
@@ -118,6 +119,27 @@ class Lenia:
 
         if rebuild:
             self._build_kernel()
+
+    def get_params(self):
+        return {
+            "mu": self.mu,
+            "sigma": self.sigma,
+            "R": self.R,
+            "T": self.T,
+            "kernel_peaks": self.kernel_peaks,
+            "kernel_widths": self.kernel_widths,
+        }
+
+    def seed(self, seed_type="random", **kwargs):
+        """Seed the world based on type string."""
+        if seed_type == "blobs":
+            self.seed_multiple_blobs(**kwargs)
+        elif seed_type == "ring":
+            self.seed_ring(**kwargs)
+        elif seed_type == "dense":
+            self.seed_random(density=0.8, radius=self.size // 3)
+        else:
+            self.seed_random(**kwargs)
 
     def seed_random(self, density=0.5, radius=None):
         """Seed a circular region with random values."""
@@ -164,33 +186,15 @@ class Lenia:
         self.world = np.clip(self.world, 0, 1)
         self.generation = 0
 
-    def add_blob(self, cx, cy, radius=15, value=0.8):
-        """Add a single blob at position (cx, cy). For mouse interaction."""
-        Y, X = np.ogrid[:self.size, :self.size]
-        dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
-        # Smooth falloff
-        influence = np.clip(1.0 - dist / radius, 0, 1) ** 2 * value
-        self.world = np.clip(self.world + influence, 0, 1)
-
-    def remove_blob(self, cx, cy, radius=15):
-        """Remove matter at position (cx, cy). For mouse interaction."""
-        Y, X = np.ogrid[:self.size, :self.size]
-        dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
-        influence = np.clip(1.0 - dist / radius, 0, 1) ** 2
-        self.world = np.clip(self.world - influence, 0, 1)
-
-    def clear(self):
-        """Clear the world."""
-        self.world[:] = 0
-        self.generation = 0
-
-    @property
-    def stats(self):
-        """Return current world statistics."""
-        return {
-            "generation": self.generation,
-            "mass": float(self.world.sum()),
-            "mean": float(self.world.mean()),
-            "max": float(self.world.max()),
-            "alive_pct": float((self.world > 0.01).sum()) / self.world.size * 100,
-        }
+    @classmethod
+    def get_slider_defs(cls):
+        return [
+            {"key": "mu", "label": "mu (center)", "section": "GROWTH FUNCTION",
+             "min": 0.01, "max": 0.40, "default": 0.15, "fmt": ".4f"},
+            {"key": "sigma", "label": "sigma (width)", "section": "GROWTH FUNCTION",
+             "min": 0.002, "max": 0.08, "default": 0.017, "fmt": ".4f"},
+            {"key": "R", "label": "Radius (R)", "section": "KERNEL",
+             "min": 5, "max": 60, "default": 13, "fmt": ".0f", "step": 1},
+            {"key": "T", "label": "Time res (T)", "section": "KERNEL",
+             "min": 1, "max": 30, "default": 10, "fmt": ".0f", "step": 1},
+        ]

@@ -129,6 +129,32 @@ class Slider:
             pygame.draw.circle(surface, THEME["track_fill"], (int(hx), self.track_y), 3)
 
 
+class ColorSlider(Slider):
+    """Slider with a colored swatch indicator next to the label."""
+
+    def __init__(self, x, y, width, label, min_val, max_val, value,
+                 swatch_color=(255, 255, 255), fmt=".2f", step=None,
+                 on_change=None):
+        super().__init__(x, y, width, label, min_val, max_val, value,
+                         fmt, step, on_change)
+        self.swatch_color = swatch_color
+
+    def draw(self, surface, font):
+        # Draw colored swatch square before label
+        swatch_size = 10
+        sx = self.x + 8
+        sy = self.y + 4
+        pygame.draw.rect(surface, self.swatch_color,
+                         (sx, sy, swatch_size, swatch_size),
+                         border_radius=2)
+
+        # Shift label right to make room for swatch
+        old_x = self.x
+        self.x += swatch_size + 6
+        super().draw(surface, font)
+        self.x = old_x
+
+
 class Button:
     """Clickable button with label."""
 
@@ -260,6 +286,16 @@ class ControlPanel:
                    step=None, on_change=None):
         slider = Slider(0, self._cursor_y, self.width, label,
                         min_val, max_val, value, fmt, step, on_change)
+        self.widgets.append(slider)
+        self._cursor_y += slider.height + 6
+        return slider
+
+    def add_color_slider(self, label, min_val, max_val, value,
+                         swatch_color=(255, 255, 255), fmt=".2f",
+                         step=None, on_change=None):
+        slider = ColorSlider(0, self._cursor_y, self.width, label,
+                              min_val, max_val, value, swatch_color,
+                              fmt, step, on_change)
         self.widgets.append(slider)
         self._cursor_y += slider.height + 6
         return slider

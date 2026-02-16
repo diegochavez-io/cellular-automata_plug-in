@@ -7,7 +7,7 @@ Transform the cellular automata plugin from a working prototype into a polished 
 ## Phases
 
 - [x] **Phase 1: LFO Smoothing** - Fix oscillator snap-back, smooth sinusoidal breathing
-- [ ] **Phase 2: Iridescent Color Pipeline** - Replace 4-layer system with unified oil-slick shimmer
+- [x] **Phase 2: Iridescent Color Pipeline** - Replace 4-layer system with unified oil-slick shimmer
 - [ ] **Phase 3: Safe Parameter Control** - EMA smoothing prevents organism death from slider changes
 - [ ] **Phase 4: Preset Cleanup & UI Simplification** - Remove bad presets, streamline control panel
 - [ ] **Phase 5: Physarum & DLA Engines** - Add slime mold and diffusion aggregation simulations
@@ -45,8 +45,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Create iridescent cosine palette pipeline and integrate into viewer
-- [ ] 02-02-PLAN.md — Add RGB tint + brightness sliders, double-click reset, remove old layer code
+- [x] 02-01-PLAN.md — Create iridescent cosine palette pipeline and integrate into viewer
+- [x] 02-02-PLAN.md — Add RGB tint + brightness sliders, double-click reset, remove old layer code
 
 ### Phase 3: Safe Parameter Control
 **Goal**: Parameter sliders can't kill organisms through abrupt changes
@@ -121,7 +121,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. LFO Smoothing | 1/1 | Complete | 2026-02-16 |
-| 2. Iridescent Color Pipeline | 0/2 | Not started | - |
+| 2. Iridescent Color Pipeline | 2/2 | Complete | 2026-02-16 |
 | 3. Safe Parameter Control | 0/TBD | Not started | - |
 | 4. Preset Cleanup & UI Simplification | 0/TBD | Not started | - |
 | 5. Physarum & DLA Engines | 0/TBD | Not started | - |

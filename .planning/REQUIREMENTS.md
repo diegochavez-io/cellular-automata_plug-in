@@ -9,13 +9,13 @@ Requirements for local polish milestone. Each maps to roadmap phases.
 
 ### Color System
 
-- [ ] **CLR-01**: Iridescent oil-slick shimmer renders across organism surface using thin-film interference model
-- [ ] **CLR-02**: Slow global hue sweep cycles entire organism through rainbow colors over time
-- [ ] **CLR-03**: Spatial gradient produces different colors across different parts of the organism body (prism effect)
-- [ ] **CLR-04**: RGB tint sliders (R, G, B) control overall color balance of the output
-- [ ] **CLR-05**: Brightness/darkness slider controls output luminance
-- [ ] **CLR-06**: All simulation engines render through the unified iridescent color pipeline
-- [ ] **CLR-07**: Old 4-layer Core/Halo/Spark/Memory system is removed
+- [x] **CLR-01**: Iridescent oil-slick shimmer renders across organism surface using thin-film interference model
+- [x] **CLR-02**: Slow global hue sweep cycles entire organism through rainbow colors over time
+- [x] **CLR-03**: Spatial gradient produces different colors across different parts of the organism body (prism effect)
+- [x] **CLR-04**: RGB tint sliders (R, G, B) control overall color balance of the output
+- [x] **CLR-05**: Brightness/darkness slider controls output luminance
+- [x] **CLR-06**: All simulation engines render through the unified iridescent color pipeline
+- [x] **CLR-07**: Old 4-layer Core/Halo/Spark/Memory system is removed
 
 ### LFO / Oscillator
 
@@ -96,13 +96,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LFO-01 | Phase 1 | Complete |
 | LFO-02 | Phase 1 | Complete |
 | LFO-03 | Phase 1 | Complete |
-| CLR-01 | Phase 2 | Pending |
-| CLR-02 | Phase 2 | Pending |
-| CLR-03 | Phase 2 | Pending |
-| CLR-04 | Phase 2 | Pending |
-| CLR-05 | Phase 2 | Pending |
-| CLR-06 | Phase 2 | Pending |
-| CLR-07 | Phase 2 | Pending |
+| CLR-01 | Phase 2 | Complete |
+| CLR-02 | Phase 2 | Complete |
+| CLR-03 | Phase 2 | Complete |
+| CLR-04 | Phase 2 | Complete |
+| CLR-05 | Phase 2 | Complete |
+| CLR-06 | Phase 2 | Complete |
+| CLR-07 | Phase 2 | Complete |
 | SAF-01 | Phase 3 | Pending |
 | SAF-02 | Phase 3 | Pending |
 | SAF-03 | Phase 3 | Pending |

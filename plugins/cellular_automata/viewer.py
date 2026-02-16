@@ -5,9 +5,8 @@ Supports multiple CA engines: Lenia, Game of Life, Excitable Media,
 and Gray-Scott Reaction-Diffusion. Switch engines and presets via
 the side panel.
 
-Features a 4-layer additive color system (Core, Halo, Spark, Memory)
-with slowly rotating rainbow hues, optional feedback into the
-simulation, and a slow LFO on Lenia growth parameters.
+Features an iridescent cosine palette pipeline with oil-slick shimmer,
+LFO-locked hue sweep, and RGB tint/brightness controls.
 
 Controls:
   SPACE       Pause / Resume

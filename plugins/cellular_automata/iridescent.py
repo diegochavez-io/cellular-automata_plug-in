@@ -69,7 +69,7 @@ class IridescentPipeline:
 
         # Temporal state
         self.hue_phase = 0.0  # Accumulated hue rotation [0, 1]
-        self.hue_speed = 0.007  # ~143 frames per full cycle at 60fps
+        self.hue_speed = 0.0005  # ~33 seconds per full cycle at 60fps
 
         # User controls (post-render transforms)
         self.tint_r = 1.0
@@ -82,8 +82,8 @@ class IridescentPipeline:
         self._vel_max_smooth = 0.01
         self._density_max_smooth = 0.01
 
-        # Current palette
-        self.palette_name = "cuttlefish"
+        # Current palette — oil_slick gives widest multi-hue range
+        self.palette_name = "oil_slick"
         self.palette = PALETTES[self.palette_name]
 
     def set_palette(self, palette_name):
@@ -174,11 +174,11 @@ class IridescentPipeline:
         self._density_max_smooth = max(density_max, self._density_max_smooth * 0.97)
         density_norm = world / self._density_max_smooth
 
-        # Weighted combination
+        # Weighted combination — edges dominate for rich spatial color variation
         self.t_buffer[:] = (
-            0.5 * density_norm +
-            0.3 * edges +
-            0.2 * velocity
+            0.25 * density_norm +
+            0.45 * edges +
+            0.30 * velocity
         )
 
         # Wrap to [0, 1]
@@ -208,8 +208,8 @@ class IridescentPipeline:
 
         # Add LFO breathing influence if available
         if lfo_phase is not None:
-            # LFO phase is in [0, 2*pi], normalize to [0, 1] and scale down
-            lfo_influence = (lfo_phase / (2.0 * np.pi)) * 0.1
+            # LFO phase is in [0, 2*pi], normalize to [0, 1] and scale gently
+            lfo_influence = (lfo_phase / (2.0 * np.pi)) * 0.02
             self.hue_phase += lfo_influence * dt * 60.0
 
         # Wrap hue phase to [0, 1]
@@ -227,18 +227,23 @@ class IridescentPipeline:
             d_shifted
         )
 
-        # 6. Apply ambient glow where organism exists
-        # Subtle soft haze around living cells
-        glow = np.where(world > 0.001, world * 0.12, 0.0)
+        # 6. Mask by density — empty space is pure black
+        # Smooth alpha ramp: organism fades in, background stays black
+        density_max = max(world.max(), 0.001)
+        alpha = np.clip(world / (self._density_max_smooth * 0.5), 0.0, 1.0)
+        self.rgb_buffer *= alpha[:, :, np.newaxis]
+
+        # 7. Apply ambient glow where organism exists
+        glow = np.where(world > 0.01, world * 0.08, 0.0)
         self.rgb_buffer += glow[:, :, np.newaxis]
 
-        # 7. Apply RGB tint (post-render multiplication)
+        # 8. Apply RGB tint (post-render multiplication)
         self.rgb_buffer *= np.array([self.tint_r, self.tint_g, self.tint_b], dtype=np.float32)
 
-        # 8. Apply brightness (exposure)
+        # 9. Apply brightness (exposure)
         self.rgb_buffer *= self.brightness
 
-        # 9. Convert to uint8 display buffer
+        # 10. Convert to uint8 display buffer
         np.clip(self.rgb_buffer, 0.0, 1.0, out=self.rgb_buffer)
         self.display_buffer[:] = (self.rgb_buffer * 255.0).astype(np.uint8)
 

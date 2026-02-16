@@ -58,6 +58,115 @@ ENGINE_LABELS = {
 }
 
 
+class SinusoidalLFO:
+    """Single-parameter phase accumulator with sinusoidal modulation.
+
+    Provides smooth breathing oscillation for one parameter around a base value.
+    Phase accumulates continuously based on delta-time for frame-rate independence.
+    """
+
+    def __init__(self, base_value, amplitude, frequency_hz=0.01):
+        """Initialize LFO.
+
+        Args:
+            base_value: Center point of oscillation
+            amplitude: Oscillation range (± from base)
+            frequency_hz: Oscillation frequency in Hz (default: 0.01 = ~100s period)
+        """
+        self.base_value = base_value
+        self.amplitude = amplitude
+        self.frequency_hz = frequency_hz
+        self.phase = 0.0
+
+    def update(self, dt):
+        """Advance phase by delta-time.
+
+        Args:
+            dt: Time elapsed in seconds
+        """
+        self.phase += 2.0 * math.pi * self.frequency_hz * dt
+
+    def get_value(self):
+        """Get current modulated value."""
+        return self.base_value + self.amplitude * math.sin(self.phase)
+
+    def reset(self):
+        """Reset phase to zero (explicit reseed only)."""
+        self.phase = 0.0
+
+
+class LeniaLFOSystem:
+    """Manages three independent sinusoidal LFOs for Lenia parameters.
+
+    Each parameter (mu, sigma, T) oscillates around its base value at different
+    frequencies to create organic, non-periodic breathing patterns.
+    """
+
+    def __init__(self, preset):
+        """Initialize LFO system from preset definition.
+
+        Args:
+            preset: Preset dict containing base values for mu, sigma, T
+        """
+        # Read base values from preset dict (never from engine state)
+        base_mu = preset.get("mu", 0.15)
+        base_sigma = preset.get("sigma", 0.017)
+        base_T = preset.get("T", 10)
+
+        # Create three independent LFOs with different frequencies
+        # Frequencies chosen to avoid synchronization (prime-ish periods)
+        self.mu_lfo = SinusoidalLFO(base_mu, 0.03, frequency_hz=0.015)      # ~67s period
+        self.sigma_lfo = SinusoidalLFO(base_sigma, 0.006, frequency_hz=0.012)  # ~83s period
+        self.T_lfo = SinusoidalLFO(base_T, base_T * 0.25, frequency_hz=0.014)  # ~71s period
+
+        # Global speed multiplier (adjustable via slider)
+        self.lfo_speed = 1.0
+
+    def update(self, dt):
+        """Update all LFOs by delta-time scaled by lfo_speed.
+
+        Args:
+            dt: Time elapsed in seconds
+        """
+        scaled_dt = dt * self.lfo_speed
+        self.mu_lfo.update(scaled_dt)
+        self.sigma_lfo.update(scaled_dt)
+        self.T_lfo.update(scaled_dt)
+
+    def get_modulated_params(self):
+        """Get current modulated parameter values.
+
+        Returns:
+            dict with keys: mu, sigma, T
+        """
+        T_val = self.T_lfo.get_value()
+        return {
+            "mu": self.mu_lfo.get_value(),
+            "sigma": self.sigma_lfo.get_value(),
+            "T": int(max(3, T_val))  # T must be integer, minimum 3
+        }
+
+    def reset_from_preset(self, preset):
+        """Update base values from preset without resetting phase.
+
+        This allows breathing to continue smoothly when preset parameters change.
+
+        Args:
+            preset: Preset dict with potentially updated base values
+        """
+        self.mu_lfo.base_value = preset.get("mu", 0.15)
+        self.sigma_lfo.base_value = preset.get("sigma", 0.017)
+        base_T = preset.get("T", 10)
+        self.T_lfo.base_value = base_T
+        self.T_lfo.amplitude = base_T * 0.25
+
+    def reset_phase(self):
+        """Reset all LFO phases to zero (explicit reseed only)."""
+        self.mu_lfo.reset()
+        self.sigma_lfo.reset()
+        self.T_lfo.reset()
+
+
 class Viewer:
     def __init__(self, width=900, height=900, sim_size=1024, start_preset="orbium"):
         self.canvas_w = width
@@ -79,14 +188,8 @@ class Viewer:
         # Color layer system
         self.layers = ColorLayerSystem(sim_size)
 
-        # LFO state for Lenia mu/sigma/T modulation (state-coupled oscillator)
-        self.lfo_phase = 0.0
-        self._lfo_base_mu = None
-        self._lfo_base_sigma = None
-        self._lfo_base_T = None
-        self._mu_vel = 0.0       # mu velocity (rate of change)
-        self._sigma_vel = 0.0    # sigma velocity
-        self._mass_smooth = 0.0  # smoothed organism mass (EMA)
+        # LFO system for Lenia mu/sigma/T modulation (sinusoidal breathing)
+        self.lfo_system = None  # Initialized in _apply_preset
 
         # Containment field: soft radial decay to keep patterns centered
         self._containment = self._build_containment(sim_size)
@@ -210,19 +313,8 @@ class Viewer:
         self.layers.reset(self.sim_size)
         self.speed_accumulator = 0.0
 
-        # Reset LFO bases from preset definition (not engine state)
-        if new_engine_name == "lenia":
-            self._lfo_base_mu = preset.get("mu", 0.15)
-            self._lfo_base_sigma = preset.get("sigma", 0.017)
-            self._lfo_base_T = preset.get("T", 10)
-            self.lfo_phase = 0.0
-            self._mu_vel = 0.0
-            self._sigma_vel = 0.0
-            self._mass_smooth = 0.0
-        else:
-            self._lfo_base_mu = None
-            self._lfo_base_sigma = None
-            self._lfo_base_T = None
+        # Create new LFO system from preset (or None for non-Lenia engines)
+        self.lfo_system = LeniaLFOSystem(preset) if new_engine_name == "lenia" else None
 
         # Rebuild panel if engine changed and panel exists
         if engine_changed and self.panel is not None:
@@ -244,6 +336,8 @@ class Viewer:
             self.sliders["speed"].set_value(self.sim_speed)
         if "brush" in self.sliders:
             self.sliders["brush"].set_value(self.brush_radius)
+        if "lfo_speed" in self.sliders and self.lfo_system:
+            self.sliders["lfo_speed"].set_value(self.lfo_system.lfo_speed)
 
     def _build_panel(self):
         """Build the control panel with engine-specific and common widgets."""
@@ -297,6 +391,13 @@ class Viewer:
             on_change=lambda v: setattr(self.layers, 'master_feedback', v)
         )
 
+        # --- LFO Breathing ---
+        panel.add_section("LFO BREATHING")
+        self.sliders["lfo_speed"] = panel.add_slider(
+            "LFO Speed", 0.0, 3.0, 1.0, fmt=".2f",
+            on_change=self._on_lfo_speed_change
+        )
+
         # --- Common: Simulation ---
         panel.add_section("SIMULATION")
         self.sliders["speed"] = panel.add_slider(
@@ -329,10 +430,11 @@ class Viewer:
             else:
                 self.engine.set_params(**{key: val})
             # Update LFO base when user adjusts mu/sigma via slider
-            if key == "mu":
-                self._lfo_base_mu = val
-            elif key == "sigma":
-                self._lfo_base_sigma = val
+            if self.lfo_system:
+                if key == "mu":
+                    self.lfo_system.mu_lfo.base_value = val
+                elif key == "sigma":
+                    self.lfo_system.sigma_lfo.base_value = val
         return callback
 
     def _make_layer_callback(self, layer_idx):
@@ -358,6 +460,11 @@ class Viewer:
     def _on_speed_change(self, val):
         self.sim_speed = val
 
+    def _on_lfo_speed_change(self, val):
+        """Update LFO speed multiplier."""
+        if self.lfo_system:
+            self.lfo_system.lfo_speed = val
+
     def _on_reset(self):
         preset = get_preset(self.preset_key)
         # Re-apply preset params to ensure clean state
@@ -373,15 +480,11 @@ class Viewer:
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
         self.layers.reset()
         self.speed_accumulator = 0.0
-        # Reset LFO from preset definition (drift-free)
-        if self.engine_name == "lenia":
-            self._lfo_base_mu = preset.get("mu", 0.15)
-            self._lfo_base_sigma = preset.get("sigma", 0.017)
-            self._lfo_base_T = preset.get("T", 10)
-            self.lfo_phase = 0.0
-            self._mu_vel = 0.0
-            self._sigma_vel = 0.0
-            self._mass_smooth = 0.0
+        # Reset LFO phase (explicit user reseed) and reload base values from preset
+        if self.lfo_system:
+            self.lfo_system.reset_phase()
+            if self.engine_name == "lenia":
+                self.lfo_system.reset_from_preset(preset)
         self._sync_sliders_from_engine()
 
     def _on_clear(self):
@@ -389,87 +492,6 @@ class Viewer:
         self.layers.reset()
         self.speed_accumulator = 0.0
 
-    def _apply_lfo(self, dt):
-        """State-coupled oscillator for organic mu/sigma breathing.
-
-        mu drifts rightward (toward selectivity → contraction),
-        sigma drifts leftward (toward narrow tolerance → contraction).
-        The organism's mass provides delayed restoring feedback,
-        creating a natural predator-prey oscillation cycle.
-        """
-        if self.engine_name != "lenia" or self._lfo_base_mu is None:
-            return
-        self.lfo_phase += dt
-
-        # ── Measure organism state (smoothed to prevent jitter) ──
-        mass = float(self.engine.world.mean())
-        self._mass_smooth += (mass - self._mass_smooth) * min(1.0, 3.0 * dt)
-
-        # Normalized pressure: positive = too big, negative = too small
-        target = 0.065
-        pressure = (self._mass_smooth - target) / max(target, 0.01)
-        pressure = max(-2.0, min(2.0, pressure))
-
-        # Current displacement from base values
-        mu_x = self.engine.mu - self._lfo_base_mu
-        sigma_x = self.engine.sigma - self._lfo_base_sigma
-
-        # ── mu dynamics (rightward drift) ──
-        # Spring pulls back to base; drift pushes right (toward selectivity);
-        # mass coupling: too big → push right harder, too small → pull left
-        mu_force = (
-            0.012                    # rightward drift
-            - 0.12 * mu_x           # spring (restoring to base)
-            + pressure * 0.8        # mass coupling (strong)
-            - 0.20 * self._mu_vel   # damping
-        )
-        self._mu_vel += mu_force * dt
-
-        # ── sigma dynamics (leftward drift) ──
-        # Drift pushes left (narrower); mass pushes back when organism shrinks
-        # Coupled to mu displacement: when mu goes right, sigma opens up to compensate
-        sigma_force = (
-            -0.002                     # leftward drift
-            - 0.12 * sigma_x          # spring
-            - pressure * 0.12         # mass coupling (strong)
-            + mu_x * 0.03             # cross-coupling: mu right → sigma widens
-            - 0.20 * self._sigma_vel  # damping
-        )
-        self._sigma_vel += sigma_force * dt
-
-        # Integrate positions
-        new_mu = self.engine.mu + self._mu_vel * dt
-        new_sigma = self.engine.sigma + self._sigma_vel * dt
-
-        # Soft walls with bounce (energy loss on reflection)
-        mu_lo = self._lfo_base_mu - 0.04
-        mu_hi = self._lfo_base_mu + 0.06
-        if new_mu < mu_lo:
-            new_mu = mu_lo
-            self._mu_vel = abs(self._mu_vel) * 0.3
-        elif new_mu > mu_hi:
-            new_mu = mu_hi
-            self._mu_vel = -abs(self._mu_vel) * 0.3
-
-        sigma_lo = max(0.003, self._lfo_base_sigma - 0.008)
-        sigma_hi = self._lfo_base_sigma + 0.012
-        if new_sigma < sigma_lo:
-            new_sigma = sigma_lo
-            self._sigma_vel = abs(self._sigma_vel) * 0.3
-        elif new_sigma > sigma_hi:
-            new_sigma = sigma_hi
-            self._sigma_vel = -abs(self._sigma_vel) * 0.3
-
-        self.engine.mu = new_mu
-        self.engine.sigma = new_sigma
-
-        # ── T modulation (independent slow sine) ──
-        # Oscillates time step: higher T = finer internal structure,
-        # lower T = thicker lines/circles. ~45s period.
-        if self._lfo_base_T is not None:
-            T_offset = math.sin(self.lfo_phase * 0.14) * (self._lfo_base_T * 0.25)
-            self.engine.T = max(3, self._lfo_base_T + T_offset)
-            self.engine.dt = 1.0 / self.engine.T
 
     def _update_swatches(self):
         """Update color slider swatches to match current rotating hues."""
@@ -584,8 +606,10 @@ class Viewer:
                 self._handle_mouse()
 
             # LFO modulation (always runs, even when paused - it's meditative)
-            if not self.paused:
-                self._apply_lfo(dt)
+            if not self.paused and self.lfo_system:
+                self.lfo_system.update(dt)
+                modulated = self.lfo_system.get_modulated_params()
+                self.engine.set_params(**modulated)
 
             # Simulation with fractional speed accumulator
             if not self.paused:
@@ -610,10 +634,8 @@ class Viewer:
                             seed_kwargs["density"] = preset["density"]
                         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
                         self.layers.reset()
-                        self._mu_vel = 0.0
-                        self._sigma_vel = 0.0
-                        self._mass_smooth = 0.0
-                        self.lfo_phase = 0.0
+                        if self.lfo_system:
+                            self.lfo_system.reset_phase()
 
             # Advance hue rotation
             self.layers.advance_time(dt)

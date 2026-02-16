@@ -42,10 +42,11 @@ Plans:
   6. All existing engines (Lenia, Life, Excitable, Gray-Scott) render through the new pipeline
   7. Old Core/Halo/Spark/Memory layer controls are completely removed from code
   8. Performance remains under 22ms/frame at 1024x1024 resolution
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: TBD during planning
+- [ ] 02-01-PLAN.md — Create iridescent cosine palette pipeline and integrate into viewer
+- [ ] 02-02-PLAN.md — Add RGB tint + brightness sliders, double-click reset, remove old layer code
 
 ### Phase 3: Safe Parameter Control
 **Goal**: Parameter sliders can't kill organisms through abrupt changes
@@ -120,7 +121,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. LFO Smoothing | 1/1 | Complete | 2026-02-16 |
-| 2. Iridescent Color Pipeline | 0/TBD | Not started | - |
+| 2. Iridescent Color Pipeline | 0/2 | Not started | - |
 | 3. Safe Parameter Control | 0/TBD | Not started | - |
 | 4. Preset Cleanup & UI Simplification | 0/TBD | Not started | - |
 | 5. Physarum & DLA Engines | 0/TBD | Not started | - |

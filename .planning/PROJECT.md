@@ -2,11 +2,11 @@
 
 ## What This Is
 
-A DayDream Scope plugin that generates cellular automata video as input for Scope's realtime video pipeline. Currently running as a standalone pygame-ce viewer on macOS, being polished for visual beauty and control simplicity before deploying to RunPod as a Scope pipeline. The organism should look like a living, iridescent creature floating in frame — always moving, always evolving.
+A DayDream Scope plugin that generates organic simulation video as input for Scope's realtime video pipeline. Built as a standalone pygame-ce viewer on macOS, featuring multiple simulation engines (Lenia, Physarum, DLA, agent-based, primordial particles, stigmergy) — each accessible as a preset. Unified iridescent color rendering makes every system look like a living, shimmering creature. Must be visually stunning and stable before deploying to RunPod.
 
 ## Core Value
 
-The organism must be visually stunning and never stop moving. If everything else fails, the video source must produce beautiful, constantly-evolving imagery that feeds Scope's pipeline.
+The video source must produce beautiful, constantly-evolving organic imagery that feeds Scope's pipeline. Every system must look alive, iridescent, and never go black.
 
 ## Requirements
 
@@ -27,47 +27,61 @@ The organism must be visually stunning and never stop moving. If everything else
 
 ### Active
 
-- [ ] Iridescent color system — oil-slick shimmer across surface, slow global hue sweep, spatial gradient across organism body (replaces current 4-layer Core/Halo/Spark/Memory system)
-- [ ] RGB tint controls — R, G, B sliders for overall color balance plus brightness/darkness control
-- [ ] Cull presets — remove Primordial Soup, Aquarium, Scutim, Geminium; keep Coral, Cardiac Waves, Orbium, Mitosis
-- [ ] Fix LFO snapping — organism grows then jumps back suddenly; must be smooth sinusoidal, never abrupt
-- [ ] Safe sliders — moving controls should not kill the on-screen organism if adjusted abruptly
-- [ ] Simplified control panel — presets, kernel radius, RGB color sliders, brush size; hide Core/Halo/Spark/Memory layer controls
-- [ ] Make remaining presets visually distinct — current presets look too similar to each other
-- [ ] Slower LFO overall — the breathing/undulation cycle should be very slow, organic growth
+- [ ] Iridescent color system — oil-slick shimmer, slow global hue sweep, spatial gradient across body (replaces 4-layer Core/Halo/Spark/Memory system)
+- [ ] RGB tint controls — R, G, B sliders for overall color balance plus brightness/darkness
+- [ ] Fix LFO snapping — smooth sinusoidal, never abrupt snap-back
+- [ ] LFO speed slider — control breathing/undulation tempo from UI
+- [ ] Safe sliders — EMA smoothing so abrupt slider moves don't kill organism
+- [ ] Simplified control panel — presets, kernel radius, RGB sliders, brush size, LFO speed; remove layer weight sliders
+- [ ] Cull bad presets — remove Primordial Soup, Aquarium, Scutim, Geminium
+- [ ] Keep Lenia presets — Coral, Cardiac Waves, Orbium, Mitosis
+- [ ] Make presets visually distinct — different color strategies, not all rainbow
+- [ ] Physarum engine — slime mold simulation, one preset
+- [ ] DLA engine — Diffusion Limited Aggregation, one preset
+- [ ] Agent-based simulation engine — one preset
+- [ ] Primordial particle system engine — one preset
+- [ ] Stigmergy engine — one preset
+- [ ] All new engines render through unified iridescent color pipeline
+- [ ] All new engines accessible as presets via number keys
 
 ### Out of Scope
 
-- RunPod deployment — this milestone is local polish only, deployment is next
-- New CA engines — focus on Lenia engine and existing presets
+- RunPod deployment — this milestone is local polish only, deployment is next milestone
 - Complex per-layer color controls — replacing with simpler RGB tint approach
-- Audio reactivity — not in scope for this milestone
+- Audio reactivity — future milestone
 - Mobile/touch controls — desktop only
+- Multiple presets per new engine — one each for v1, expand later
 
 ## Context
 
 - **Existing codebase**: ~15 Python files in `plugins/cellular_automata/`, well-structured with engine base class, color layers, controls, viewer, presets
+- **Engine base class**: Abstract `CAEngine` with `step()`, `set_params()`, `seed()`, `get_params()`, `apply_feedback()` — new engines must implement this interface
 - **Current color system**: 4 additive layers (Core, Halo, Spark, Memory) with HSV rainbow rotation — being replaced with iridescent system
-- **Current LFO**: State-coupled oscillator where mu drifts right, sigma drifts left, mass provides delayed feedback — has a snapping/reset bug
-- **Target**: Video source for Scope's Krea Realtime pipeline (Wan2.1-T2V-14B) on RunPod RTX 5090
-- **Performance baseline**: ~22ms/frame at 1024x1024 with float32 + pre-allocated buffers
+- **Current LFO**: State-coupled oscillator with snap-back bug — needs fix
+- **Research**: Thin-film interference via cosine model (~12ms at 1024²), EMA safe sliders (0.3-0.5s time constant), cosine palette gradients
+- **Reference resources**: Nature of Code (context7), Shadertoy (context7) for simulation algorithms
+- **Target**: Video source for Scope's Krea Realtime pipeline on RunPod RTX 5090
+- **Performance baseline**: ~22ms/frame at 1024x1024
 - **Run command**: `cd plugins && python3 -m cellular_automata coral`
 
 ## Constraints
 
-- **Tech stack**: Python 3.10+, pygame-ce, numpy — must stay compatible with eventual Scope plugin deployment
-- **Performance**: Must maintain ~22ms/frame or better at 1024x1024 — this is a realtime video source
-- **Platform**: macOS (Darwin) for local development, RunPod Linux for deployment
-- **Visual**: Organism must never go black, never stop moving, speed >= 0.95
+- **Tech stack**: Python 3.10+, pygame-ce, numpy — must stay compatible with Scope plugin deployment
+- **Performance**: Must maintain ~22ms/frame or better at 1024x1024 — realtime video source
+- **Platform**: macOS (Darwin) for local dev, RunPod Linux for deployment
+- **Visual**: Must never go black, never stop moving, speed >= 0.95
+- **Engine interface**: New engines must implement `CAEngine` base class for preset system compatibility
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Replace 4-layer color system with iridescent shader | User wants oil-slick/soap-bubble look, current layers don't produce it | — Pending |
+| Replace 4-layer color system with iridescent pipeline | User wants oil-slick/soap-bubble shimmer, current layers too flat | — Pending |
 | RGB tint instead of per-layer HSV controls | Simpler aesthetic control, less cognitive load | — Pending |
-| Remove 4 presets, keep 4 | Primordial Soup, Aquarium, Scutim, Geminium look too similar | — Pending |
-| Focus on Lenia engine only | Other engines (Life, Gray-Scott, Excitable) not needed for video source | — Pending |
+| Unified color pipeline for all engines | Consistent aesthetic across Lenia, Physarum, DLA, etc. | — Pending |
+| Each new engine = one preset | Keep v1 focused, expand presets per engine in future | — Pending |
+| EMA smoothing for safe sliders | Research confirms 0.3-0.5s time constant prevents organism death | — Pending |
+| Cosine palette for iridescence | Pure numpy, ~0.5ms/frame, no new dependencies | — Pending |
 
 ---
-*Last updated: 2026-02-16 after initialization*
+*Last updated: 2026-02-16 after questioning (scope expanded to include new simulation engines)*

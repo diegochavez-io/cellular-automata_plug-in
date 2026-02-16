@@ -42,6 +42,9 @@ PALETTES = {
     },
 }
 
+# Pre-compute alpha curve LUT (x^0.25 for 256 levels)
+_ALPHA_CURVE = np.sqrt(np.sqrt(np.linspace(0, 1, 256, dtype=np.float32)))
+
 
 class IridescentPipeline:
     """Cosine palette-based rendering pipeline with multi-channel signal mapping.
@@ -54,13 +57,18 @@ class IridescentPipeline:
     def __init__(self, size):
         self.size = size
 
-        # Pre-allocate all buffers (float32 for performance)
-        self.rgb_buffer = np.zeros((size, size, 3), dtype=np.float32)
+        # Pre-allocate work buffers
         self.t_buffer = np.zeros((size, size), dtype=np.float32)
         self.display_buffer = np.zeros((size, size, 3), dtype=np.uint8)
         self.edge_buffer = np.zeros((size, size), dtype=np.float32)
         self.vel_buffer = np.zeros((size, size), dtype=np.float32)
         self.prev_world = None
+        self._lut_indices = np.zeros((size, size), dtype=np.intp)
+
+        # Combined 2D LUT: (t_idx × alpha_idx) → uint8 RGB
+        # Bakes in palette + alpha curve + tint + brightness + uint8 conversion
+        # 256×256×3 = 192KB — fits in L2 cache
+        self._lut_2d = np.zeros((256 * 256, 3), dtype=np.uint8)
 
         # Hue state — locked to LFO breathing
         self.hue_phase = 0.0
@@ -89,19 +97,47 @@ class IridescentPipeline:
             self.palette_name = palette_name
             self.palette = PALETTES[palette_name]
 
-    def cosine_palette(self, t, a, b, c, d):
-        """Inigo Quilez cosine gradient: color = a + b * cos(2*pi*(c*t + d))"""
-        t_expanded = t[:, :, np.newaxis]
-        self.rgb_buffer[:] = a + b * np.cos(2.0 * np.pi * (c * t_expanded + d))
-        np.clip(self.rgb_buffer, 0.0, 1.0, out=self.rgb_buffer)
-        return self.rgb_buffer
+    def _build_lut_2d(self, a, b, c, d):
+        """Build combined (t × alpha) → uint8 LUT with tint/brightness baked in.
+
+        256 palette colors × 256 alpha levels = 65536 entries × 3 bytes = 192KB.
+        Eliminates per-pixel float ops: palette eval, alpha, tint, clip, uint8.
+        """
+        t_vals = np.linspace(0, 1, 256, dtype=np.float32)
+        # Palette colors: (256, 3) float32
+        colors = a + b * np.cos(2.0 * np.pi * (c * t_vals[:, np.newaxis] + d))
+        np.clip(colors, 0, 1, out=colors)
+
+        tint_bright = np.array(
+            [self.tint_r * self.brightness,
+             self.tint_g * self.brightness,
+             self.tint_b * self.brightness], dtype=np.float32
+        )
+
+        # Vectorized: (256, 1, 3) * (1, 256, 1) * (3,) * 255
+        result = (colors[:, np.newaxis, :] *
+                  _ALPHA_CURVE[np.newaxis, :, np.newaxis] *
+                  tint_bright * 255.0)
+        np.clip(result, 0, 255, out=result)
+        self._lut_2d[:] = result.reshape(-1, 3).astype(np.uint8)
 
     def compute_signals(self, world):
         """Compute edge magnitude and velocity from world state."""
-        # Edge magnitude via finite differences
-        dx = np.roll(world, 1, axis=1) - np.roll(world, -1, axis=1)
-        dy = np.roll(world, 1, axis=0) - np.roll(world, -1, axis=0)
-        self.edge_buffer[:] = np.sqrt(dx * dx + dy * dy)
+        w = world
+        # Horizontal difference into edge_buffer (slicing avoids np.roll copies)
+        np.subtract(w[:, :-2], w[:, 2:], out=self.edge_buffer[:, 1:-1])
+        self.edge_buffer[:, 0] = w[:, -1] - w[:, 1]
+        self.edge_buffer[:, -1] = w[:, -2] - w[:, 0]
+        np.square(self.edge_buffer, out=self.edge_buffer)
+
+        # Vertical difference into t_buffer (scratch), then combine
+        np.subtract(w[:-2, :], w[2:, :], out=self.t_buffer[1:-1, :])
+        self.t_buffer[0, :] = w[-1, :] - w[1, :]
+        self.t_buffer[-1, :] = w[-2, :] - w[0, :]
+        np.square(self.t_buffer, out=self.t_buffer)
+
+        self.edge_buffer += self.t_buffer
+        np.sqrt(self.edge_buffer, out=self.edge_buffer)
 
         # Smoothed max normalization (anti-strobe)
         edge_max = max(self.edge_buffer.max(), 0.001)
@@ -110,7 +146,8 @@ class IridescentPipeline:
 
         # Velocity (temporal change)
         if self.prev_world is not None:
-            self.vel_buffer[:] = np.abs(world - self.prev_world)
+            np.subtract(world, self.prev_world, out=self.vel_buffer)
+            np.abs(self.vel_buffer, out=self.vel_buffer)
             vel_max = max(self.vel_buffer.max(), 0.001)
             self._vel_max_smooth = max(vel_max, self._vel_max_smooth * 0.97)
             self.vel_buffer /= self._vel_max_smooth
@@ -129,14 +166,13 @@ class IridescentPipeline:
         """Map simulation state to gradient parameter t in [0, 1]."""
         density_max = max(world.max(), 0.001)
         self._density_max_smooth = max(density_max, self._density_max_smooth * 0.97)
-        density_norm = world / self._density_max_smooth
 
-        # Edges dominate for rich spatial color variation
-        self.t_buffer[:] = (
-            0.25 * density_norm +
-            0.45 * edges +
-            0.30 * velocity
-        )
+        # Weighted combination — in-place ops, vel_buffer as scratch
+        np.multiply(world, 0.25 / self._density_max_smooth, out=self.t_buffer)
+        self.vel_buffer *= 0.30  # scale velocity in-place (consumed)
+        self.t_buffer += self.vel_buffer
+        np.multiply(edges, 0.45, out=self.vel_buffer)  # reuse as scratch
+        self.t_buffer += self.vel_buffer
         self.t_buffer %= 1.0
         return self.t_buffer
 
@@ -181,44 +217,48 @@ class IridescentPipeline:
         # 3. Advance hue locked to LFO breathing
         self._advance_hue_lfo(lfo_phase, dt)
 
-        # 4. Shift palette d parameter by hue phase
+        # 4. Build combined 2D LUT with current hue + tint + brightness
         d_shifted = self.palette["d"] + self.hue_phase
-
-        # 5. Generate cosine palette colors
-        self.cosine_palette(
-            t,
-            self.palette["a"],
-            self.palette["b"],
-            self.palette["c"],
-            d_shifted
+        self._build_lut_2d(
+            self.palette["a"], self.palette["b"],
+            self.palette["c"], d_shifted
         )
 
-        # 6. Non-linear alpha for translucent, fluffy organism look
-        # Gentle power curve: thin areas stay visibly colored (3D depth effect)
-        density_norm = world / max(self._density_max_smooth, 0.001)
-        alpha = np.power(np.clip(density_norm, 0.0, 1.0), 0.25)
-        self.rgb_buffer *= alpha[:, :, np.newaxis]
+        # 5. Quantize t to [0,255], pre-multiply by 256 for combined index
+        np.multiply(t, 255.0, out=self.t_buffer)
+        np.clip(self.t_buffer, 0, 255, out=self.t_buffer)
+        np.floor(self.t_buffer, out=self.t_buffer)
+        np.multiply(self.t_buffer, 256, out=self.t_buffer)
 
-        # 7. Bioluminescent edge specks — bright dots at high-gradient boundaries
+        # 6. Quantize alpha to [0,255] — reuse vel_buffer as scratch
+        np.divide(world, max(self._density_max_smooth, 0.001), out=self.vel_buffer)
+        np.clip(self.vel_buffer, 0, 1, out=self.vel_buffer)
+        np.multiply(self.vel_buffer, 255, out=self.vel_buffer)
+        np.floor(self.vel_buffer, out=self.vel_buffer)
+
+        # 7. Combined index: t_idx * 256 + alpha_idx → single LUT lookup
+        self.t_buffer += self.vel_buffer
+        self._lut_indices[:] = self.t_buffer
+        np.take(self._lut_2d, self._lut_indices.ravel(), axis=0,
+                out=self.display_buffer.reshape(-1, 3))
+
+        # 8. Bioluminescent edge specks — bright dots at high-gradient boundaries
         speck_threshold = 0.55
         speck_mask = (edges > speck_threshold) & (world > 0.005)
         if speck_mask.any():
             speck_intensity = (
                 ((edges[speck_mask] - speck_threshold) / (1.0 - speck_threshold)) * 0.45
             )
-            self.rgb_buffer[speck_mask] += speck_intensity[:, np.newaxis]
-
-        # 8. Apply RGB tint (post-render multiplication)
-        self.rgb_buffer *= np.array(
-            [self.tint_r, self.tint_g, self.tint_b], dtype=np.float32
-        )
-
-        # 9. Apply brightness (exposure)
-        self.rgb_buffer *= self.brightness
-
-        # 10. Convert to uint8 display buffer
-        np.clip(self.rgb_buffer, 0.0, 1.0, out=self.rgb_buffer)
-        self.display_buffer[:] = (self.rgb_buffer * 255.0).astype(np.uint8)
+            # Add specks in int16 to avoid uint8 overflow
+            pixels = self.display_buffer[speck_mask].astype(np.int16)
+            tint_scale = np.array(
+                [self.tint_r * self.brightness * 255.0,
+                 self.tint_g * self.brightness * 255.0,
+                 self.tint_b * self.brightness * 255.0], dtype=np.float32
+            )
+            pixels += (speck_intensity[:, np.newaxis] * tint_scale).astype(np.int16)
+            np.clip(pixels, 0, 255, out=pixels)
+            self.display_buffer[speck_mask] = pixels.astype(np.uint8)
 
         return self.display_buffer
 
@@ -226,11 +266,11 @@ class IridescentPipeline:
         """Reset pipeline state (on engine change or reseed)."""
         if size is not None and size != self.size:
             self.size = size
-            self.rgb_buffer = np.zeros((size, size, 3), dtype=np.float32)
             self.t_buffer = np.zeros((size, size), dtype=np.float32)
             self.display_buffer = np.zeros((size, size, 3), dtype=np.uint8)
             self.edge_buffer = np.zeros((size, size), dtype=np.float32)
             self.vel_buffer = np.zeros((size, size), dtype=np.float32)
+            self._lut_indices = np.zeros((size, size), dtype=np.intp)
 
         self.prev_world = None
         self._edge_max_smooth = 0.01

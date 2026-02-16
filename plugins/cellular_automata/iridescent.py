@@ -19,25 +19,25 @@ PALETTES = {
     "oil_slick": {
         "a": np.array([0.5, 0.5, 0.5], dtype=np.float32),
         "b": np.array([0.5, 0.5, 0.5], dtype=np.float32),
-        "c": np.array([1.0, 1.0, 1.0], dtype=np.float32),
+        "c": np.array([2.0, 2.0, 2.0], dtype=np.float32),
         "d": np.array([0.00, 0.33, 0.67], dtype=np.float32),
     },
     "cuttlefish": {
         "a": np.array([0.3, 0.5, 0.6], dtype=np.float32),
         "b": np.array([0.4, 0.4, 0.3], dtype=np.float32),
-        "c": np.array([1.0, 1.2, 0.8], dtype=np.float32),
+        "c": np.array([2.0, 2.4, 1.6], dtype=np.float32),
         "d": np.array([0.0, 0.25, 0.5], dtype=np.float32),
     },
     "bioluminescent": {
         "a": np.array([0.2, 0.4, 0.5], dtype=np.float32),
         "b": np.array([0.5, 0.5, 0.4], dtype=np.float32),
-        "c": np.array([1.5, 1.0, 1.0], dtype=np.float32),
+        "c": np.array([3.0, 2.0, 2.0], dtype=np.float32),
         "d": np.array([0.15, 0.4, 0.6], dtype=np.float32),
     },
     "deep_coral": {
         "a": np.array([0.4, 0.3, 0.5], dtype=np.float32),
         "b": np.array([0.4, 0.5, 0.4], dtype=np.float32),
-        "c": np.array([0.8, 1.0, 1.2], dtype=np.float32),
+        "c": np.array([1.6, 2.0, 2.4], dtype=np.float32),
         "d": np.array([0.1, 0.35, 0.55], dtype=np.float32),
     },
 }
@@ -194,18 +194,17 @@ class IridescentPipeline:
         )
 
         # 6. Non-linear alpha for translucent, fluffy organism look
-        # Power curve: thin areas become semi-transparent (not binary on/off)
-        # This creates the 3D depth / underwater creature feel
+        # Gentle power curve: thin areas stay visibly colored (3D depth effect)
         density_norm = world / max(self._density_max_smooth, 0.001)
-        alpha = np.power(np.clip(density_norm, 0.0, 1.0), 0.35)
+        alpha = np.power(np.clip(density_norm, 0.0, 1.0), 0.25)
         self.rgb_buffer *= alpha[:, :, np.newaxis]
 
         # 7. Bioluminescent edge specks — bright dots at high-gradient boundaries
-        speck_threshold = 0.65
-        speck_mask = (edges > speck_threshold) & (world > 0.02)
+        speck_threshold = 0.55
+        speck_mask = (edges > speck_threshold) & (world > 0.005)
         if speck_mask.any():
             speck_intensity = (
-                ((edges[speck_mask] - speck_threshold) / (1.0 - speck_threshold)) * 0.35
+                ((edges[speck_mask] - speck_threshold) / (1.0 - speck_threshold)) * 0.45
             )
             self.rgb_buffer[speck_mask] += speck_intensity[:, np.newaxis]
 

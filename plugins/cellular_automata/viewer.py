@@ -73,22 +73,25 @@ class Viewer:
         self.fps_history = []
 
         # Fractional speed system (accumulator pattern)
-        self.sim_speed = 0.15  # default: very slow, meditative
+        self.sim_speed = 1.0  # default: smooth continuous
         self.speed_accumulator = 0.0
 
         # Color layer system
         self.layers = ColorLayerSystem(sim_size)
 
-        # LFO state for Lenia mu/sigma modulation (state-coupled oscillator)
+        # LFO state for Lenia mu/sigma/T modulation (state-coupled oscillator)
         self.lfo_phase = 0.0
         self._lfo_base_mu = None
         self._lfo_base_sigma = None
+        self._lfo_base_T = None
         self._mu_vel = 0.0       # mu velocity (rate of change)
         self._sigma_vel = 0.0    # sigma velocity
         self._mass_smooth = 0.0  # smoothed organism mass (EMA)
 
         # Containment field: soft radial decay to keep patterns centered
         self._containment = self._build_containment(sim_size)
+        # Center noise mask: gaussian blob for interior perturbation
+        self._noise_mask = self._build_noise_mask(sim_size)
 
         # Engine and preset state
         self.preset_key = start_preset
@@ -118,9 +121,21 @@ class Viewer:
         center = size / 2.0
         Y, X = np.ogrid[:size, :size]
         dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
-        # Fade starts at 60% from center, reaches full at 100%
-        fade = np.clip((dist - 0.6) / 0.4, 0.0, 1.0)
-        return (1.0 - fade * 0.008).astype(np.float64)
+        # Fade starts at 25% from center, aggressive decay kills edges
+        fade = np.clip((dist - 0.25) / 0.25, 0.0, 1.0)
+        return (1.0 - fade * 0.06).astype(np.float64)
+
+    def _build_noise_mask(self, size):
+        """Gaussian mask for center noise injection.
+
+        Strongest at center, fades to zero by ~40% from center.
+        Keeps interior structures constantly evolving.
+        """
+        center = size / 2.0
+        Y, X = np.ogrid[:size, :size]
+        dist_sq = ((X - center) ** 2 + (Y - center) ** 2) / (center * center)
+        # Gaussian with sigma ~0.3 of the radius
+        return (0.003 * np.exp(-dist_sq / (2 * 0.15 ** 2))).astype(np.float64)
 
     def _scale_R(self, base_R):
         """Scale kernel radius for current sim resolution (Lenia only)."""
@@ -199,6 +214,7 @@ class Viewer:
         if new_engine_name == "lenia":
             self._lfo_base_mu = preset.get("mu", 0.15)
             self._lfo_base_sigma = preset.get("sigma", 0.017)
+            self._lfo_base_T = preset.get("T", 10)
             self.lfo_phase = 0.0
             self._mu_vel = 0.0
             self._sigma_vel = 0.0
@@ -206,6 +222,7 @@ class Viewer:
         else:
             self._lfo_base_mu = None
             self._lfo_base_sigma = None
+            self._lfo_base_T = None
 
         # Rebuild panel if engine changed and panel exists
         if engine_changed and self.panel is not None:
@@ -283,7 +300,7 @@ class Viewer:
         # --- Common: Simulation ---
         panel.add_section("SIMULATION")
         self.sliders["speed"] = panel.add_slider(
-            "Speed", 0.02, 5.0, self.sim_speed, fmt=".2f",
+            "Speed", 0.95, 5.0, self.sim_speed, fmt=".2f",
             on_change=self._on_speed_change
         )
         self.sliders["brush"] = panel.add_slider(
@@ -360,6 +377,7 @@ class Viewer:
         if self.engine_name == "lenia":
             self._lfo_base_mu = preset.get("mu", 0.15)
             self._lfo_base_sigma = preset.get("sigma", 0.017)
+            self._lfo_base_T = preset.get("T", 10)
             self.lfo_phase = 0.0
             self._mu_vel = 0.0
             self._sigma_vel = 0.0
@@ -398,23 +416,24 @@ class Viewer:
 
         # ── mu dynamics (rightward drift) ──
         # Spring pulls back to base; drift pushes right (toward selectivity);
-        # mass coupling: too big → push right faster, too small → resist
+        # mass coupling: too big → push right harder, too small → pull left
         mu_force = (
-            0.008                    # rightward drift
-            - 0.08 * mu_x           # spring (restoring to base)
-            + pressure * 0.4        # mass coupling
-            - 0.18 * self._mu_vel   # damping
+            0.012                    # rightward drift
+            - 0.12 * mu_x           # spring (restoring to base)
+            + pressure * 0.8        # mass coupling (strong)
+            - 0.20 * self._mu_vel   # damping
         )
         self._mu_vel += mu_force * dt
 
         # ── sigma dynamics (leftward drift) ──
-        # Drift pushes left (toward narrower tolerance);
-        # mass coupling: too big → narrow further, too small → widen
+        # Drift pushes left (narrower); mass pushes back when organism shrinks
+        # Coupled to mu displacement: when mu goes right, sigma opens up to compensate
         sigma_force = (
-            -0.001                     # leftward drift
-            - 0.08 * sigma_x          # spring
-            - pressure * 0.06         # mass coupling
-            - 0.18 * self._sigma_vel  # damping
+            -0.002                     # leftward drift
+            - 0.12 * sigma_x          # spring
+            - pressure * 0.12         # mass coupling (strong)
+            + mu_x * 0.03             # cross-coupling: mu right → sigma widens
+            - 0.20 * self._sigma_vel  # damping
         )
         self._sigma_vel += sigma_force * dt
 
@@ -443,6 +462,14 @@ class Viewer:
 
         self.engine.mu = new_mu
         self.engine.sigma = new_sigma
+
+        # ── T modulation (independent slow sine) ──
+        # Oscillates time step: higher T = finer internal structure,
+        # lower T = thicker lines/circles. ~45s period.
+        if self._lfo_base_T is not None:
+            T_offset = math.sin(self.lfo_phase * 0.14) * (self._lfo_base_T * 0.25)
+            self.engine.T = max(3, self._lfo_base_T + T_offset)
+            self.engine.dt = 1.0 / self.engine.T
 
     def _update_swatches(self):
         """Update color slider swatches to match current rotating hues."""
@@ -565,10 +592,28 @@ class Viewer:
                 self.speed_accumulator += self.sim_speed
                 while self.speed_accumulator >= 1.0:
                     self.engine.step()
-                    # Soft containment: gently decay edges to keep pattern centered
                     if self.engine_name == "lenia":
+                        # Containment: decay edges to keep pattern centered
                         self.engine.world *= self._containment
+                        # Center noise: tiny perturbations keep interior evolving
+                        noise = np.random.randn(self.sim_size, self.sim_size) * self._noise_mask
+                        self.engine.world = np.clip(self.engine.world + noise, 0.0, 1.0)
                     self.speed_accumulator -= 1.0
+
+                # Auto-reseed if organism dies (never go black)
+                if self.engine_name == "lenia":
+                    mass = float(self.engine.world.mean())
+                    if mass < 0.002:
+                        preset = get_preset(self.preset_key)
+                        seed_kwargs = {}
+                        if "density" in preset:
+                            seed_kwargs["density"] = preset["density"]
+                        self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
+                        self.layers.reset()
+                        self._mu_vel = 0.0
+                        self._sigma_vel = 0.0
+                        self._mass_smooth = 0.0
+                        self.lfo_phase = 0.0
 
             # Advance hue rotation
             self.layers.advance_time(dt)

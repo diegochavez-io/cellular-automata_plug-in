@@ -5,34 +5,34 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Beautiful, constantly-evolving organic imagery that feeds Scope's pipeline — every system alive, iridescent, never black.
-**Current focus:** Phase 2 - Iridescent Color Pipeline (in progress)
+**Current focus:** Phase 2 - Iridescent Color Pipeline (complete, pending verification)
 
 ## Current Position
 
 Phase: 2 of 6 (Iridescent Color Pipeline)
-Plan: 1 of 2 in current phase
-Status: In progress
-Last activity: 2026-02-16 — Completed 02-01-PLAN.md
+Plan: 2 of 2 in current phase
+Status: Phase complete
+Last activity: 2026-02-16 — Completed 02-02-PLAN.md
 
-Progress: [███░░░░░░░] 33%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 2
-- Average duration: 3 min
-- Total execution time: 0.1 hours
+- Total plans completed: 3
+- Average duration: 6 min
+- Total execution time: 0.3 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 1 | 1/1 | 3 min | 3 min |
-| 2 | 1/2 | 3 min | 3 min |
+| 2 | 2/2 | 15 min | 8 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (3 min), 02-01 (3 min)
-- Trend: Consistent (3 min avg)
+- Last 5 plans: 01-01 (3 min), 02-01 (3 min), 02-02 (12 min)
+- Trend: Increasing (visual iteration adds time)
 
 *Updated after each plan completion*
 
@@ -43,14 +43,13 @@ Progress: [███░░░░░░░] 33%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- oil_slick palette with c=2.0 frequency for richest multi-hue variation (Phase 2)
+- Hue locked to LFO breath cycles (8% per breath, ~12 breaths full cycle) (Phase 2)
+- Non-linear alpha power 0.25 for translucent fluffy depth (Phase 2)
+- Bioluminescent edge specks at high-gradient boundaries (Phase 2)
 - Cosine palette system for mathematical iridescent gradients (Phase 2)
-- Multi-channel signal mapping (density/edges/velocity) drives spatial color variation (Phase 2)
-- LFO-synchronized hue sweep ties color animation to breathing (Phase 2)
-- Remove feedback system - color is purely visual (Phase 2)
-- Four palette presets, default to cuttlefish for bioluminescent aesthetic (Phase 2)
-- Replace 4-layer color system with iridescent pipeline for oil-slick shimmer aesthetic
-- RGB tint instead of per-layer HSV controls for simpler UI
-- Unified color pipeline for all engines ensures consistent aesthetic
+- Multi-channel signal mapping (density/edges/velocity) drives spatial color (Phase 2)
+- Color is purely visual — no feedback into simulation (Phase 2)
 - Pure sinusoidal phase accumulators replace velocity-based physics oscillator (Phase 1)
 - Three independent LFO frequencies create organic polyrhythmic breathing (Phase 1)
 
@@ -65,5 +64,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 02-01-PLAN.md, phase 2 in progress
+Stopped at: Completed 02-02-PLAN.md, phase 2 complete
 Resume file: None

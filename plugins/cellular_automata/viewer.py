@@ -79,10 +79,16 @@ class Viewer:
         # Color layer system
         self.layers = ColorLayerSystem(sim_size)
 
-        # LFO state for Lenia mu/sigma modulation
+        # LFO state for Lenia mu/sigma modulation (state-coupled oscillator)
         self.lfo_phase = 0.0
         self._lfo_base_mu = None
         self._lfo_base_sigma = None
+        self._mu_vel = 0.0       # mu velocity (rate of change)
+        self._sigma_vel = 0.0    # sigma velocity
+        self._mass_smooth = 0.0  # smoothed organism mass (EMA)
+
+        # Containment field: soft radial decay to keep patterns centered
+        self._containment = self._build_containment(sim_size)
 
         # Engine and preset state
         self.preset_key = start_preset
@@ -102,6 +108,19 @@ class Viewer:
     @property
     def total_w(self):
         return self.canvas_w + (PANEL_WIDTH if self.panel_visible else 0)
+
+    def _build_containment(self, size):
+        """Build a radial decay mask that keeps patterns centered.
+
+        Returns a (size, size) float array: 1.0 at center, gently
+        decaying toward edges. Applied each sim step.
+        """
+        center = size / 2.0
+        Y, X = np.ogrid[:size, :size]
+        dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
+        # Fade starts at 60% from center, reaches full at 100%
+        fade = np.clip((dist - 0.6) / 0.4, 0.0, 1.0)
+        return (1.0 - fade * 0.008).astype(np.float64)
 
     def _scale_R(self, base_R):
         """Scale kernel radius for current sim resolution (Lenia only)."""
@@ -176,11 +195,14 @@ class Viewer:
         self.layers.reset(self.sim_size)
         self.speed_accumulator = 0.0
 
-        # Reset LFO bases from new preset params
+        # Reset LFO bases from preset definition (not engine state)
         if new_engine_name == "lenia":
-            p = self.engine.get_params()
-            self._lfo_base_mu = p["mu"]
-            self._lfo_base_sigma = p["sigma"]
+            self._lfo_base_mu = preset.get("mu", 0.15)
+            self._lfo_base_sigma = preset.get("sigma", 0.017)
+            self.lfo_phase = 0.0
+            self._mu_vel = 0.0
+            self._sigma_vel = 0.0
+            self._mass_smooth = 0.0
         else:
             self._lfo_base_mu = None
             self._lfo_base_sigma = None
@@ -321,17 +343,28 @@ class Viewer:
 
     def _on_reset(self):
         preset = get_preset(self.preset_key)
+        # Re-apply preset params to ensure clean state
+        params = {k: v for k, v in preset.items()
+                  if k not in ("engine", "name", "description", "seed", "density")}
+        if self.engine_name == "lenia" and "R" in params:
+            params["R"] = self._scale_R(params["R"])
+        self.engine.set_params(**params)
+        # Reseed
         seed_kwargs = {}
         if "density" in preset:
             seed_kwargs["density"] = preset["density"]
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
         self.layers.reset()
         self.speed_accumulator = 0.0
-        # Re-sync LFO bases from current engine params (not preset defaults)
+        # Reset LFO from preset definition (drift-free)
         if self.engine_name == "lenia":
-            p = self.engine.get_params()
-            self._lfo_base_mu = p["mu"]
-            self._lfo_base_sigma = p["sigma"]
+            self._lfo_base_mu = preset.get("mu", 0.15)
+            self._lfo_base_sigma = preset.get("sigma", 0.017)
+            self.lfo_phase = 0.0
+            self._mu_vel = 0.0
+            self._sigma_vel = 0.0
+            self._mass_smooth = 0.0
+        self._sync_sliders_from_engine()
 
     def _on_clear(self):
         self.engine.clear()
@@ -339,16 +372,77 @@ class Viewer:
         self.speed_accumulator = 0.0
 
     def _apply_lfo(self, dt):
-        """Apply very slow LFO modulation to Lenia mu/sigma."""
+        """State-coupled oscillator for organic mu/sigma breathing.
+
+        mu drifts rightward (toward selectivity → contraction),
+        sigma drifts leftward (toward narrow tolerance → contraction).
+        The organism's mass provides delayed restoring feedback,
+        creating a natural predator-prey oscillation cycle.
+        """
         if self.engine_name != "lenia" or self._lfo_base_mu is None:
             return
         self.lfo_phase += dt
-        # Two incommensurate frequencies so they never sync up
-        # ~80s period for mu, ~114s period for sigma
-        mu_offset = math.sin(self.lfo_phase * 0.078) * 0.012
-        sigma_offset = math.sin(self.lfo_phase * 0.055) * 0.002
-        self.engine.mu = self._lfo_base_mu + mu_offset
-        self.engine.sigma = max(0.002, self._lfo_base_sigma + sigma_offset)
+
+        # ── Measure organism state (smoothed to prevent jitter) ──
+        mass = float(self.engine.world.mean())
+        self._mass_smooth += (mass - self._mass_smooth) * min(1.0, 3.0 * dt)
+
+        # Normalized pressure: positive = too big, negative = too small
+        target = 0.065
+        pressure = (self._mass_smooth - target) / max(target, 0.01)
+        pressure = max(-2.0, min(2.0, pressure))
+
+        # Current displacement from base values
+        mu_x = self.engine.mu - self._lfo_base_mu
+        sigma_x = self.engine.sigma - self._lfo_base_sigma
+
+        # ── mu dynamics (rightward drift) ──
+        # Spring pulls back to base; drift pushes right (toward selectivity);
+        # mass coupling: too big → push right faster, too small → resist
+        mu_force = (
+            0.008                    # rightward drift
+            - 0.08 * mu_x           # spring (restoring to base)
+            + pressure * 0.4        # mass coupling
+            - 0.18 * self._mu_vel   # damping
+        )
+        self._mu_vel += mu_force * dt
+
+        # ── sigma dynamics (leftward drift) ──
+        # Drift pushes left (toward narrower tolerance);
+        # mass coupling: too big → narrow further, too small → widen
+        sigma_force = (
+            -0.001                     # leftward drift
+            - 0.08 * sigma_x          # spring
+            - pressure * 0.06         # mass coupling
+            - 0.18 * self._sigma_vel  # damping
+        )
+        self._sigma_vel += sigma_force * dt
+
+        # Integrate positions
+        new_mu = self.engine.mu + self._mu_vel * dt
+        new_sigma = self.engine.sigma + self._sigma_vel * dt
+
+        # Soft walls with bounce (energy loss on reflection)
+        mu_lo = self._lfo_base_mu - 0.04
+        mu_hi = self._lfo_base_mu + 0.06
+        if new_mu < mu_lo:
+            new_mu = mu_lo
+            self._mu_vel = abs(self._mu_vel) * 0.3
+        elif new_mu > mu_hi:
+            new_mu = mu_hi
+            self._mu_vel = -abs(self._mu_vel) * 0.3
+
+        sigma_lo = max(0.003, self._lfo_base_sigma - 0.008)
+        sigma_hi = self._lfo_base_sigma + 0.012
+        if new_sigma < sigma_lo:
+            new_sigma = sigma_lo
+            self._sigma_vel = abs(self._sigma_vel) * 0.3
+        elif new_sigma > sigma_hi:
+            new_sigma = sigma_hi
+            self._sigma_vel = -abs(self._sigma_vel) * 0.3
+
+        self.engine.mu = new_mu
+        self.engine.sigma = new_sigma
 
     def _update_swatches(self):
         """Update color slider swatches to match current rotating hues."""
@@ -471,6 +565,9 @@ class Viewer:
                 self.speed_accumulator += self.sim_speed
                 while self.speed_accumulator >= 1.0:
                     self.engine.step()
+                    # Soft containment: gently decay edges to keep pattern centered
+                    if self.engine_name == "lenia":
+                        self.engine.world *= self._containment
                     self.speed_accumulator -= 1.0
 
             # Advance hue rotation

@@ -93,39 +93,41 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLR-01 | Pending | Pending |
-| CLR-02 | Pending | Pending |
-| CLR-03 | Pending | Pending |
-| CLR-04 | Pending | Pending |
-| CLR-05 | Pending | Pending |
-| CLR-06 | Pending | Pending |
-| CLR-07 | Pending | Pending |
-| LFO-01 | Pending | Pending |
-| LFO-02 | Pending | Pending |
-| LFO-03 | Pending | Pending |
-| SAF-01 | Pending | Pending |
-| SAF-02 | Pending | Pending |
-| SAF-03 | Pending | Pending |
-| UI-01 | Pending | Pending |
-| UI-02 | Pending | Pending |
-| UI-03 | Pending | Pending |
-| PRE-01 | Pending | Pending |
-| PRE-02 | Pending | Pending |
-| PRE-03 | Pending | Pending |
-| PRE-04 | Pending | Pending |
-| ENG-01 | Pending | Pending |
-| ENG-02 | Pending | Pending |
-| ENG-03 | Pending | Pending |
-| ENG-04 | Pending | Pending |
-| ENG-05 | Pending | Pending |
-| ENG-06 | Pending | Pending |
-| ENG-07 | Pending | Pending |
+| LFO-01 | Phase 1 | Pending |
+| LFO-02 | Phase 1 | Pending |
+| LFO-03 | Phase 1 | Pending |
+| CLR-01 | Phase 2 | Pending |
+| CLR-02 | Phase 2 | Pending |
+| CLR-03 | Phase 2 | Pending |
+| CLR-04 | Phase 2 | Pending |
+| CLR-05 | Phase 2 | Pending |
+| CLR-06 | Phase 2 | Pending |
+| CLR-07 | Phase 2 | Pending |
+| SAF-01 | Phase 3 | Pending |
+| SAF-02 | Phase 3 | Pending |
+| SAF-03 | Phase 3 | Pending |
+| PRE-01 | Phase 4 | Pending |
+| PRE-02 | Phase 4 | Pending |
+| PRE-03 | Phase 4 | Pending |
+| PRE-04 | Phase 4 | Pending |
+| UI-01 | Phase 4 | Pending |
+| UI-02 | Phase 4 | Pending |
+| UI-03 | Phase 4 | Pending |
+| ENG-01 | Phase 5 | Pending |
+| ENG-02 | Phase 5 | Pending |
+| ENG-06 | Phase 5 | Pending |
+| ENG-07 | Phase 5 | Pending |
+| ENG-03 | Phase 6 | Pending |
+| ENG-04 | Phase 6 | Pending |
+| ENG-05 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 27 total
-- Mapped to phases: 0
-- Unmapped: 27 ⚠️
+- Mapped to phases: 27
+- Unmapped: 0
+
+Note: ENG-06 and ENG-07 apply to all new engines, so they span Phases 5 and 6.
 
 ---
 *Requirements defined: 2026-02-16*
-*Last updated: 2026-02-16 after initial definition*
+*Last updated: 2026-02-16 after roadmap creation*

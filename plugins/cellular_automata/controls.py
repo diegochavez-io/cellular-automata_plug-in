@@ -6,6 +6,7 @@ Minimal, dark-themed widgets drawn directly with pygame.
 
 import pygame
 import math
+import time
 
 
 # Theme colors
@@ -41,11 +42,13 @@ class Slider:
         self.min_val = min_val
         self.max_val = max_val
         self.value = value
+        self.default_value = value  # Store initial value for double-click reset
         self.fmt = fmt
         self.step = step
         self.on_change = on_change
         self.dragging = False
         self.hovered = False
+        self._last_click_time = 0  # For double-click detection
 
         # Layout
         self.track_y = self.y + 22
@@ -73,6 +76,19 @@ class Slider:
             # Check if clicking on handle or track
             if (self.track_x - 4 <= mx <= self.track_x + self.track_w + 4 and
                     self.track_y - 12 <= my <= self.track_y + 12):
+
+                current_time = time.time()
+                # Double-click detection (within 300ms)
+                if current_time - self._last_click_time < 0.3:
+                    # Double-click: reset to default
+                    self.value = self.default_value
+                    if self.on_change:
+                        self.on_change(self.value)
+                    self._last_click_time = current_time
+                    return True
+
+                # Single click: start dragging
+                self._last_click_time = current_time
                 self.dragging = True
                 self.value = self._x_to_val(mx)
                 if self.on_change:

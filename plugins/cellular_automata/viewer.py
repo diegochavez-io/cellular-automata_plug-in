@@ -342,6 +342,15 @@ class Viewer:
             self.sliders["brush"].set_value(self.brush_radius)
         if "lfo_speed" in self.sliders and self.lfo_system:
             self.sliders["lfo_speed"].set_value(self.lfo_system.lfo_speed)
+        # Iridescent color sliders
+        if "tint_r" in self.sliders:
+            self.sliders["tint_r"].set_value(self.iridescent.tint_r)
+        if "tint_g" in self.sliders:
+            self.sliders["tint_g"].set_value(self.iridescent.tint_g)
+        if "tint_b" in self.sliders:
+            self.sliders["tint_b"].set_value(self.iridescent.tint_b)
+        if "brightness" in self.sliders:
+            self.sliders["brightness"].set_value(self.iridescent.brightness)
 
     def _build_panel(self):
         """Build the control panel with engine-specific and common widgets."""
@@ -380,6 +389,25 @@ class Viewer:
                 step=sdef.get("step"),
                 on_change=self._make_param_callback(sdef["key"])
             )
+
+        # --- Iridescent Color Controls ---
+        panel.add_section("IRIDESCENT")
+        self.sliders["tint_r"] = panel.add_slider(
+            "Tint R", 0.0, 2.0, self.iridescent.tint_r, fmt=".2f",
+            on_change=lambda v: setattr(self.iridescent, 'tint_r', v)
+        )
+        self.sliders["tint_g"] = panel.add_slider(
+            "Tint G", 0.0, 2.0, self.iridescent.tint_g, fmt=".2f",
+            on_change=lambda v: setattr(self.iridescent, 'tint_g', v)
+        )
+        self.sliders["tint_b"] = panel.add_slider(
+            "Tint B", 0.0, 2.0, self.iridescent.tint_b, fmt=".2f",
+            on_change=lambda v: setattr(self.iridescent, 'tint_b', v)
+        )
+        self.sliders["brightness"] = panel.add_slider(
+            "Brightness", 0.1, 3.0, self.iridescent.brightness, fmt=".2f",
+            on_change=lambda v: setattr(self.iridescent, 'brightness', v)
+        )
 
         # --- LFO Breathing ---
         panel.add_section("LFO BREATHING")

@@ -6,7 +6,7 @@ Transform the cellular automata plugin from a working prototype into a polished 
 
 ## Phases
 
-- [ ] **Phase 1: LFO Smoothing** - Fix oscillator snap-back, smooth sinusoidal breathing
+- [x] **Phase 1: LFO Smoothing** - Fix oscillator snap-back, smooth sinusoidal breathing
 - [ ] **Phase 2: Iridescent Color Pipeline** - Replace 4-layer system with unified oil-slick shimmer
 - [ ] **Phase 3: Safe Parameter Control** - EMA smoothing prevents organism death from slider changes
 - [ ] **Phase 4: Preset Cleanup & UI Simplification** - Remove bad presets, streamline control panel
@@ -27,7 +27,7 @@ Transform the cellular automata plugin from a working prototype into a polished 
 **Plans**: 1 plan
 
 Plans:
-- [ ] 01-01-PLAN.md — Replace state-coupled oscillator with sinusoidal LFO system + speed slider
+- [x] 01-01-PLAN.md — Replace state-coupled oscillator with sinusoidal LFO system + speed slider
 
 ### Phase 2: Iridescent Color Pipeline
 **Goal**: Unified oil-slick shimmer replaces old 4-layer color system
@@ -119,7 +119,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. LFO Smoothing | 0/1 | Planned | - |
+| 1. LFO Smoothing | 1/1 | Complete | 2026-02-16 |
 | 2. Iridescent Color Pipeline | 0/TBD | Not started | - |
 | 3. Safe Parameter Control | 0/TBD | Not started | - |
 | 4. Preset Cleanup & UI Simplification | 0/TBD | Not started | - |

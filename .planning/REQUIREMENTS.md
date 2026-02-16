@@ -19,9 +19,9 @@ Requirements for local polish milestone. Each maps to roadmap phases.
 
 ### LFO / Oscillator
 
-- [ ] **LFO-01**: LFO breathing is smooth sinusoidal — no sudden snap-back or reset
-- [ ] **LFO-02**: LFO speed slider on UI controls the breathing/undulation tempo
-- [ ] **LFO-03**: Default LFO cycle is very slow — organic, imperceptible growth and retreat
+- [x] **LFO-01**: LFO breathing is smooth sinusoidal — no sudden snap-back or reset
+- [x] **LFO-02**: LFO speed slider on UI controls the breathing/undulation tempo
+- [x] **LFO-03**: Default LFO cycle is very slow — organic, imperceptible growth and retreat
 
 ### Parameter Safety
 
@@ -93,9 +93,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| LFO-01 | Phase 1 | Pending |
-| LFO-02 | Phase 1 | Pending |
-| LFO-03 | Phase 1 | Pending |
+| LFO-01 | Phase 1 | Complete |
+| LFO-02 | Phase 1 | Complete |
+| LFO-03 | Phase 1 | Complete |
 | CLR-01 | Phase 2 | Pending |
 | CLR-02 | Phase 2 | Pending |
 | CLR-03 | Phase 2 | Pending |

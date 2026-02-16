@@ -31,7 +31,7 @@ from .lenia import Lenia
 from .life import Life
 from .excitable import Excitable
 from .gray_scott import GrayScott
-from .color_layers import ColorLayerSystem, LAYER_DEFS
+from .iridescent import IridescentPipeline
 from .presets import (
     PRESETS, PRESET_ORDER, PRESET_ORDERS, ENGINE_ORDER,
     get_preset, get_presets_for_engine,
@@ -185,8 +185,8 @@ class Viewer:
         self.sim_speed = 1.0  # default: smooth continuous
         self.speed_accumulator = 0.0
 
-        # Color layer system
-        self.layers = ColorLayerSystem(sim_size)
+        # Iridescent color pipeline
+        self.iridescent = IridescentPipeline(sim_size)
 
         # LFO system for Lenia mu/sigma/T modulation (sinusoidal breathing)
         self.lfo_system = None  # Initialized in _apply_preset
@@ -309,9 +309,13 @@ class Viewer:
             seed_kwargs["density"] = preset["density"]
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
 
-        # Reset color layers and speed
-        self.layers.reset(self.sim_size)
+        # Reset iridescent pipeline and speed
+        self.iridescent.reset(self.sim_size)
         self.speed_accumulator = 0.0
+
+        # Set palette from preset if specified
+        if "palette" in preset:
+            self.iridescent.set_palette(preset["palette"])
 
         # Create new LFO system from preset (or None for non-Lenia engines)
         self.lfo_system = LeniaLFOSystem(preset) if new_engine_name == "lenia" else None
@@ -377,20 +381,6 @@ class Viewer:
                 on_change=self._make_param_callback(sdef["key"])
             )
 
-        # --- Color Layers ---
-        panel.add_section("COLOR LAYERS")
-        initial_colors = self.layers.get_current_colors()
-        for i, ldef in enumerate(LAYER_DEFS):
-            self.sliders[f"layer_{i}"] = panel.add_color_slider(
-                ldef["name"], 0.0, 1.0, self.layers.weights[i],
-                swatch_color=initial_colors[i], fmt=".2f",
-                on_change=self._make_layer_callback(i)
-            )
-        self.sliders["feedback"] = panel.add_slider(
-            "Feedback", 0.0, 1.0, self.layers.master_feedback, fmt=".2f",
-            on_change=lambda v: setattr(self.layers, 'master_feedback', v)
-        )
-
         # --- LFO Breathing ---
         panel.add_section("LFO BREATHING")
         self.sliders["lfo_speed"] = panel.add_slider(
@@ -437,12 +427,6 @@ class Viewer:
                     self.lfo_system.sigma_lfo.base_value = val
         return callback
 
-    def _make_layer_callback(self, layer_idx):
-        """Create a callback for a color layer weight slider."""
-        def callback(val):
-            self.layers.weights[layer_idx] = val
-        return callback
-
     def _on_engine_select(self, idx, name):
         """Switch to a different engine type."""
         new_engine = ENGINE_ORDER[idx]
@@ -478,7 +462,7 @@ class Viewer:
         if "density" in preset:
             seed_kwargs["density"] = preset["density"]
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
-        self.layers.reset()
+        self.iridescent.reset()
         self.speed_accumulator = 0.0
         # Reset LFO phase (explicit user reseed) and reload base values from preset
         if self.lfo_system:
@@ -489,28 +473,16 @@ class Viewer:
 
     def _on_clear(self):
         self.engine.clear()
-        self.layers.reset()
+        self.iridescent.reset()
         self.speed_accumulator = 0.0
 
 
-    def _update_swatches(self):
-        """Update color slider swatches to match current rotating hues."""
-        colors = self.layers.get_current_colors()
-        for i in range(4):
-            key = f"layer_{i}"
-            if key in self.sliders:
-                self.sliders[key].swatch_color = colors[i]
-
-    def _render_frame(self):
-        """Render using the 4-layer color compositing system."""
-        signals = self.layers.compute_signals(self.engine.world)
-        rgb = self.layers.composite(signals)
-
-        # Apply feedback to simulation if master feedback > 0
-        if self.layers.master_feedback > 0.001 and not self.paused:
-            feedback = self.layers.compute_feedback(signals)
-            self.engine.apply_feedback(feedback)
-
+    def _render_frame(self, dt):
+        """Render using iridescent cosine palette pipeline."""
+        lfo_phase = None
+        if self.lfo_system:
+            lfo_phase = self.lfo_system.mu_lfo.phase
+        rgb = self.iridescent.render(self.engine.world, dt, lfo_phase=lfo_phase)
         surface = pygame.surfarray.make_surface(rgb.swapaxes(0, 1).copy())
         return surface
 
@@ -561,8 +533,7 @@ class Viewer:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         path = os.path.join(screenshots_dir, f"ca_{self.preset_key}_{timestamp}.png")
 
-        signals = self.layers.compute_signals(self.engine.world)
-        rgb = self.layers.composite(signals)
+        rgb = self.iridescent.render(self.engine.world, 0.0)
         save_surface = pygame.surfarray.make_surface(rgb.swapaxes(0, 1).copy())
         pygame.image.save(save_surface, path)
         print(f"Screenshot saved: {path}")
@@ -633,16 +604,13 @@ class Viewer:
                         if "density" in preset:
                             seed_kwargs["density"] = preset["density"]
                         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
-                        self.layers.reset()
+                        self.iridescent.reset()
                         if self.lfo_system:
                             self.lfo_system.reset_phase()
 
-            # Advance hue rotation
-            self.layers.advance_time(dt)
-
             # Render canvas
             screen.fill(THEME["bg"])
-            sim_surface = self._render_frame()
+            sim_surface = self._render_frame(dt)
             scaled = pygame.transform.smoothscale(sim_surface, (self.canvas_w, self.canvas_h))
             screen.blit(scaled, (0, 0))
 
@@ -655,9 +623,8 @@ class Viewer:
 
             self._draw_hud(screen, avg_fps)
 
-            # Panel + update swatches
+            # Panel
             if self.panel_visible and self.panel:
-                self._update_swatches()
                 self.panel.x = self.canvas_w
                 self.panel.height = self.canvas_h
                 self.panel.draw(screen, self.panel_font)

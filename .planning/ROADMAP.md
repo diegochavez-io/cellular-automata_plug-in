@@ -24,10 +24,10 @@ Transform the cellular automata plugin from a working prototype into a polished 
   2. LFO speed slider on control panel adjusts breathing tempo in real-time
   3. Default LFO cycle is very slow (imperceptible growth/retreat over 30+ seconds)
   4. Running any preset (Coral, Orbium, etc.) for 5+ minutes shows consistent breathing without glitches
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 01-01: TBD during planning
+- [ ] 01-01-PLAN.md — Replace state-coupled oscillator with sinusoidal LFO system + speed slider
 
 ### Phase 2: Iridescent Color Pipeline
 **Goal**: Unified oil-slick shimmer replaces old 4-layer color system
@@ -119,7 +119,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. LFO Smoothing | 0/TBD | Not started | - |
+| 1. LFO Smoothing | 0/1 | Planned | - |
 | 2. Iridescent Color Pipeline | 0/TBD | Not started | - |
 | 3. Safe Parameter Control | 0/TBD | Not started | - |
 | 4. Preset Cleanup & UI Simplification | 0/TBD | Not started | - |

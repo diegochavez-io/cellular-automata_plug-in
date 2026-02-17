@@ -72,6 +72,10 @@ class CAEngine(ABC):
         self.world[:] = 0
         self.generation = 0
 
+    def get_mass(self):
+        """Return mean density of the world."""
+        return float(self.world.mean())
+
     @property
     def stats(self):
         """Return current world statistics."""

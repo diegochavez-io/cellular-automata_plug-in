@@ -481,33 +481,44 @@ nvidia-smi -l 1
 ### What It Is
 A living cellular automata organism that generates constant-motion video as input for Scope's Krea Realtime pipeline. The CA output feeds into the AI video pipeline with LoRAs for final aesthetic transformation. Think: microscopic bioluminescent organism → AI-enhanced art video.
 
-### Current State (Local Prototype)
+### Current State (Local Prototype — Final Tweaks)
 - **Location**: `plugins/cellular_automata/`
 - **Run**: `cd plugins && python3 -m cellular_automata coral`
 - **GitHub**: `diegochavez-io/cellular-automata_plug-in`
 - **Stack**: pygame-ce, numpy, scipy
-- **Resolution**: 1024x1024 at ~5-8 FPS (CPU-bound)
+- **Resolution**: 1024x1024 (Lenia/SL/MNCA), 512x512 (GS)
+- **FPS**: Lenia ~12-18, SmoothLife ~8-12, MNCA ~10-15, GS ~30-55
 
-**Working engines**: Lenia (8 presets), SmoothLife (5 presets), MNCA (5 presets)
+**Working engines**: Lenia (8 presets), SmoothLife (5 presets), MNCA (5 presets), Gray-Scott (5 presets)
 
 **Key features built**:
-- Iridescent cuttlefish color palette (cosine palette, 2D LUT)
+- Universal flow fields: 7 types (radial, rotate, swirl, bubble, ring, vortex, vertical), 0.8px/step semi-Lagrangian advection, all presets ship with 5 active flow channels
+- Vivid multi-zone color: full-gamut cosine palettes with 2nd+3rd harmonics, spatial noise blobs create distinct color zones across organism
+- Float32 throughout all engines for ~2x speedup
+- Pre-computed noise pool (6 full-res frames, zero per-frame cost)
+- Thickness slider for line dilation control
+- GS contrast stretch (V*3.0), SmoothLife contrast curve (world^1.8)
 - Rotating stir current prevents center crystallization
 - Velocity-driven perturbation: static pixels always get pushed
 - Coverage bounds (25%-85%) with noise-based management
-- LFO breathing modulation per engine
+- LFO breathing modulation per engine (Lenia: mu/sigma/T, SL: b1/b2, MNCA: delta, GS: feed)
 - Radial containment keeps organism centered on black background
 - Auto-reseed on death (no flash)
 
+**Status**: Doing small visual tweaks (preset tuning, color refinement). Core systems are solid. Next big step is wrapping as a Scope plugin (Phase 2).
+
 ### Deployment Roadmap
 
-**Phase 1: Finalize Local Prototype** ← WE ARE HERE
-- [x] Core engines working (Lenia, SmoothLife, MNCA)
+**Phase 1: Finalize Local Prototype** ← ALMOST DONE (small tweaks remaining)
+- [x] Core engines working (Lenia, SmoothLife, MNCA, Gray-Scott)
+- [x] Universal flow field system (7 types, all presets cranked)
+- [x] Vivid multi-zone color pipeline (harmonics, spatial zones)
 - [x] Organic movement (rotating stir, velocity perturbation)
-- [x] Natural color pipeline (cuttlefish palette, interior grain)
 - [x] Coverage bounds and auto-reseed
-- [ ] Final preset tuning (MNCA center movement, Lenia ring variety)
-- [ ] Performance baseline measurements per engine
+- [x] Performance optimization (float32, noise pool, LUT caching)
+- [x] Thickness slider
+- [ ] Final preset tuning (user cycling through giving feedback)
+- [ ] Color refinement (closer to bioluminescent reference images)
 
 **Phase 2: Scope Plugin Wrapper**
 - [ ] Create text-only pipeline class (output THWC tensors in [0,1])
@@ -560,9 +571,9 @@ A living cellular automata organism that generates constant-motion video as inpu
 6. ✅ Documented correct paths and troubleshooting steps
 7. 🔄 Complete remaining 14B LoRA training
 8. ⬜ Build custom deployment container
-9. ✅ Cellular automata prototype working locally (Lenia, SmoothLife, MNCA)
-10. 🔄 Finalize CA presets and movement quality
-11. ⬜ Write Scope plugin wrapper for CA
+9. ✅ CA prototype working locally — all engines, flow, color, performance
+10. 🔄 Final CA visual tweaks (small — preset tuning, color refinement)
+11. ⬜ Write Scope plugin wrapper for CA (Phase 2 — next big step)
 12. ⬜ Port CA to CuPy for GPU acceleration
 13. ⬜ Deploy CA plugin to RunPod and test full pipeline
 
@@ -574,5 +585,7 @@ A living cellular automata organism that generates constant-motion video as inpu
 - **Container**: Already running Scope on port 8000
 - **GPU**: RTX 5090, 32GB VRAM
 - **CA Plugin**: Run with `cd plugins && python3 -m cellular_automata coral`
-- **CA Priority**: Finish preset tuning → Write Scope plugin wrapper → CuPy port
+- **CA Status**: Small visual tweaks remaining, then Phase 2 (Scope plugin wrapper) — a huge undertaking
+- **CA Latest Commit**: `ea03e2a` — universal flow, vivid color, performance
+- **Key CA decisions locked**: Flow at 0.8px/step, full-gamut palettes w/ harmonics, spatial noise zones, float32, pre-computed noise pool
 - **Known Issues**: One corrupted LoRA removed (`styl-gn_2602_000000759.safetensors`)

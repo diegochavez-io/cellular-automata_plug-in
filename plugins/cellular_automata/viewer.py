@@ -385,6 +385,7 @@ class Viewer:
         # Coverage management state
         self._prev_mass = 0.0
         self._stagnant_frames = 0  # Counts consecutive low-change frames
+        self._nucleation_counter = 0  # Frame counter for gentle center seeding
 
         # Velocity-driven perturbation: track previous world for motion detection
         self._prev_world = None
@@ -704,6 +705,91 @@ class Viewer:
         self._noise_idx = (self._noise_idx + 1) % len(self._noise_pool)
         return self._noise_pool[self._noise_idx]
 
+    def _drop_center_seed(self):
+        """Drop a dense filled blob near the center, sized for the engine.
+        SmoothLife needs large, dense (near-binary) discs to trigger birth.
+        Lenia/MNCA use softer gaussians."""
+        size = self.sim_size
+        cx, cy = size // 2, size // 2
+        # Random offset within 15% of center
+        spread = int(size * 0.15)
+        sx = cx + np.random.randint(-spread, spread + 1)
+        sy = cy + np.random.randint(-spread, spread + 1)
+
+        Y, X = np.ogrid[:size, :size]
+        dist = np.sqrt((X - sx)**2 + (Y - sy)**2)
+
+        if self.engine_name == "smoothlife":
+            # SmoothLife needs dense filled circles ~ra sized
+            ra = getattr(self.engine, 'ra', 24)
+            r = max(15, int(ra * 0.7)) + np.random.randint(-3, 4)
+            # Dense near-binary disc with soft edge
+            inner = dist < r
+            edge = (dist >= r) & (dist < r + 4)
+            fade = (1.0 - (dist[edge] - r) / 4).astype(np.float32)
+            values = np.random.random(inner.sum()).astype(np.float32) * 0.2 + 0.75
+            self.engine.world[inner] = np.clip(
+                self.engine.world[inner] + values, 0.0, 1.0)
+            self.engine.world[edge] = np.clip(
+                self.engine.world[edge] + fade * 0.5, 0.0, 1.0)
+        else:
+            # Lenia/MNCA: softer gaussian, R-scaled
+            base_r = int(12 * self.res_scale)
+            r = max(8, base_r + np.random.randint(-2, 3))
+            sigma = r / 2.2
+            blob = np.exp(-((X - sx)**2 + (Y - sy)**2) / (2 * sigma * sigma))
+            mask = dist < r * 2
+            self.engine.world[mask] = np.clip(
+                self.engine.world[mask] + blob[mask].astype(np.float32) * 0.9,
+                0.0, 1.0)
+
+    def _drop_seed_cluster(self):
+        """Drop 3-5 seeds clustered near center so they can interact
+        and form structure together. Only called when nearly dead."""
+        size = self.sim_size
+        cx, cy = size // 2, size // 2
+        # Cluster center: slight random offset from true center
+        cluster_offset = int(size * 0.08)
+        cluster_cx = cx + np.random.randint(-cluster_offset, cluster_offset + 1)
+        cluster_cy = cy + np.random.randint(-cluster_offset, cluster_offset + 1)
+        # Drop 3-5 seeds within a tight radius of each other
+        n_seeds = np.random.randint(3, 6)
+        for _ in range(n_seeds):
+            # Each seed is close to the cluster center
+            scatter = int(size * 0.04)  # tight grouping
+            sx = cluster_cx + np.random.randint(-scatter, scatter + 1)
+            sy = cluster_cy + np.random.randint(-scatter, scatter + 1)
+            sx = max(0, min(size - 1, sx))
+            sy = max(0, min(size - 1, sy))
+            self._drop_center_seed_at(sx, sy)
+
+    def _drop_center_seed_at(self, sx, sy):
+        """Drop a single dense seed at a specific position."""
+        size = self.sim_size
+        Y, X = np.ogrid[:size, :size]
+        dist = np.sqrt((X - sx)**2 + (Y - sy)**2)
+
+        if self.engine_name == "smoothlife":
+            ra = getattr(self.engine, 'ra', 24)
+            r = max(15, int(ra * 0.7)) + np.random.randint(-3, 4)
+            inner = dist < r
+            edge = (dist >= r) & (dist < r + 4)
+            fade = (1.0 - (dist[edge] - r) / 4).astype(np.float32)
+            values = np.random.random(inner.sum()).astype(np.float32) * 0.2 + 0.75
+            self.engine.world[inner] = np.clip(
+                self.engine.world[inner] + values, 0.0, 1.0)
+            self.engine.world[edge] = np.clip(
+                self.engine.world[edge] + fade * 0.5, 0.0, 1.0)
+        else:
+            base_r = int(12 * self.res_scale)
+            r = max(8, base_r + np.random.randint(-2, 3))
+            sigma = r / 2.2
+            blob = np.exp(-((X - sx)**2 + (Y - sy)**2) / (2 * sigma * sigma))
+            mask = dist < r * 2
+            self.engine.world[mask] = np.clip(
+                self.engine.world[mask] + blob[mask].astype(np.float32) * 0.9,
+                0.0, 1.0)
+
     def _scale_R(self, base_R):
         """Scale kernel radius for current sim resolution (Lenia only)."""
         return max(5, int(base_R * self.res_scale))
@@ -830,9 +916,13 @@ class Viewer:
             seed_kwargs["density"] = preset["density"]
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
 
-        # GS warmup: pre-run steps so the user sees developed structure
-        # immediately. At 512x512 with 2 substeps, 1000 gens takes ~3s.
-        if new_engine_name == "gray_scott":
+        # Warmup: pre-run steps so user sees developed structure immediately.
+        # Lenia needs ~200 steps to establish blobs before flow tears at them.
+        # GS needs ~1000 steps at 512x512 (~3s).
+        if new_engine_name == "lenia":
+            for _ in range(200):
+                self.engine.step()
+        elif new_engine_name == "gray_scott":
             for _ in range(1000):
                 self.engine.step()
 
@@ -861,8 +951,14 @@ class Viewer:
         else:
             self.iridescent._hue_per_breath = 0.08
 
-        # Thickness: dilation amount for structure lines (0 = raw, higher = thicker)
-        self.render_thickness = 0.0
+        # Per-preset viewer controls (hue, brightness, speed, thickness)
+        self.render_thickness = preset.get("thickness", 0.0)
+        self.sim_speed = preset.get("speed", 1.0)
+        if "hue" in preset:
+            self._hue_value = preset["hue"]
+            self.iridescent.set_hue_offset(preset["hue"])
+        if "brightness" in preset:
+            self.iridescent.brightness = preset["brightness"]
 
         # Create smoothed parameters for all engine sliders
         self.smoothed_params = {}
@@ -1064,57 +1160,31 @@ class Viewer:
         self.iridescent.set_hue_offset(val)
 
     def _on_reset(self):
+        """Reseed only — keep all current controls, shape, and flow as-is."""
         preset = get_preset(self.preset_key)
-        # Re-apply preset params to ensure clean state (filter out flow keys)
-        params = {k: v for k, v in preset.items()
-                  if k not in ("engine", "name", "description", "seed", "density", "palette")
-                  and k not in FLOW_KEYS}
-        if self.engine_name == "lenia" and "R" in params:
-            params["R"] = self._scale_R(params["R"])
-        if self.engine_name == "smoothlife":
-            if "ri" in params:
-                params["ri"] = max(3, int(params["ri"] * self.res_scale))
-            if "ra" in params:
-                params["ra"] = max(params.get("ri", 6) + 3, int(params["ra"] * self.res_scale))
-        if self.engine_name == "mnca" and "rings" in params:
-            params["rings"] = [
-                (max(0, int(ir * self.res_scale)), max(2, int(orr * self.res_scale)))
-                for ir, orr in params["rings"]
-            ]
-        self.engine.set_params(**params)
-        # Reset flow params from preset
-        for fk in FLOW_KEYS:
-            setattr(self, '_' + fk, preset.get(fk, 0.0))
-        # Snap smoothed params to current values (immediate reset, no smoothing)
-        for key, sp in self.smoothed_params.items():
-            current_params = self.engine.get_params()
-            if key in current_params:
-                sp.snap(current_params[key])
-        # Reseed
         seed_kwargs = {}
         if "density" in preset:
             seed_kwargs["density"] = preset["density"]
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
-        # GS warmup on reseed too
+        # GS warmup on reseed
         if self.engine_name == "gray_scott":
+            for _ in range(200):
+                self.engine.step()
+        # Lenia warmup so pattern establishes before flow hits
+        elif self.engine_name == "lenia":
             for _ in range(200):
                 self.engine.step()
         self.iridescent.reset()
         self.speed_accumulator = 0.0
-        # Reset LFO phase (explicit user reseed) and reload base values from preset
+        # Reset LFO phase only (keep base values from current sliders)
         if self.lfo_system:
             self.lfo_system.reset_phase()
-            self.lfo_system.reset_from_preset(preset)
         if self.gs_lfo_system:
             self.gs_lfo_system.reset_phase()
-            self.gs_lfo_system.reset_from_preset(preset)
         if self.sl_lfo_system:
             self.sl_lfo_system.reset_phase()
-            self.sl_lfo_system.reset_from_preset(preset)
         if self.mnca_lfo_system:
             self.mnca_lfo_system.reset_phase()
-            self.mnca_lfo_system.reset_from_preset(preset)
-        self._sync_sliders_from_engine()
 
     def _on_clear(self):
         self.engine.clear()
@@ -1565,16 +1635,9 @@ class Viewer:
                             self.mnca_lfo_system.reset_phase()
                         self._stagnant_frames = 0
 
-                    # GS: skip noise injection — feed/kill dynamics handle coverage
+                    # GS: skip noise/nucleation — feed/kill dynamics handle coverage
                     elif self.engine_name == "gray_scott":
                         pass
-
-                    # Too sparse (< 25%): amplify center noise to trigger growth
-                    elif alive_frac < 0.25:
-                        boost = 4.0 if alive_frac > 0.15 else 8.0
-                        boost_noise = self._fast_noise() * self._noise_mask * boost
-                        self.engine.world = np.clip(
-                            self.engine.world + boost_noise, 0.0, 1.0)
 
                     # Too dense (> 85%): erode toward center
                     elif alive_frac > 0.85:
@@ -1593,11 +1656,18 @@ class Viewer:
                         else:
                             self._stagnant_frames = max(0, self._stagnant_frames - 2)
 
-                        # After ~2 seconds of stagnation, gently boost noise amplitude
+                        # After ~2 seconds of stagnation, drop a cluster to stir things up
                         if self._stagnant_frames > 120 and 0.10 < alive_frac < 0.85:
-                            boost_noise = self._fast_noise() * self._noise_mask * 5
-                            self.engine.world = np.clip(
-                                self.engine.world + boost_noise, 0.0, 1.0)
+                            self._drop_seed_cluster()
+                            self._stagnant_frames = 0
+
+                    # Nucleation: only when nearly dead, drop a cluster
+                    # so seeds can interact and form something together
+                    if self.engine_name != "gray_scott" and alive_frac < 0.10:
+                        self._nucleation_counter += 1
+                        if self._nucleation_counter >= 30:
+                            self._nucleation_counter = 0
+                            self._drop_seed_cluster()
 
             # Render canvas
             screen.fill(THEME["bg"])

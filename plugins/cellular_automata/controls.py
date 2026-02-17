@@ -37,7 +37,7 @@ class Slider:
         self.x = x
         self.y = y
         self.width = width
-        self.height = 36
+        self.height = 30
         self.label = label
         self.min_val = min_val
         self.max_val = max_val
@@ -51,9 +51,9 @@ class Slider:
         self._last_click_time = 0  # For double-click detection
 
         # Layout
-        self.track_y = self.y + 22
+        self.track_y = self.y + 20
         self.track_h = 4
-        self.handle_r = 7
+        self.handle_r = 6
         self.track_x = self.x + 8
         self.track_w = self.width - 16
 
@@ -302,11 +302,11 @@ class CollapsibleSection:
         # Track total height of children
         h = getattr(widget, 'height', 0)
         if isinstance(widget, Slider):
-            h = widget.height + 6
+            h = widget.height + 3
         elif isinstance(widget, ButtonRow):
-            h = widget.total_height + 8
+            h = widget.total_height + 6
         elif isinstance(widget, SectionHeader):
-            h = widget.height + 4
+            h = widget.height + 3
         self._total_children_height += h
 
     def handle_event(self, event):
@@ -357,18 +357,20 @@ class ControlPanel:
         self.widgets = []  # List of (widget, type) tuples
         self.surface = pygame.Surface((width, height))
         self._cursor_y = 8  # Current vertical position for adding widgets
+        self.scroll_offset = 0
+        self._content_height = height
 
     def add_section(self, title):
         header = SectionHeader(0, self._cursor_y, self.width, title)
         self.widgets.append(header)
-        self._cursor_y += header.height + 4
+        self._cursor_y += header.height + 2
 
     def add_slider(self, label, min_val, max_val, value, fmt=".3f",
                    step=None, on_change=None):
         slider = Slider(0, self._cursor_y, self.width, label,
                         min_val, max_val, value, fmt, step, on_change)
         self.widgets.append(slider)
-        self._cursor_y += slider.height + 6
+        self._cursor_y += slider.height + 3
         return slider
 
     def add_color_slider(self, label, min_val, max_val, value,
@@ -378,14 +380,14 @@ class ControlPanel:
                               min_val, max_val, value, swatch_color,
                               fmt, step, on_change)
         self.widgets.append(slider)
-        self._cursor_y += slider.height + 6
+        self._cursor_y += slider.height + 3
         return slider
 
     def add_button_row(self, labels, selected=0, on_select=None):
         row = ButtonRow(8, self._cursor_y, self.width - 16, labels,
                         selected, on_select)
         self.widgets.append(row)
-        self._cursor_y += row.total_height + 8
+        self._cursor_y += row.total_height + 4
         return row
 
     def add_button(self, label, width=None, on_click=None):
@@ -408,26 +410,57 @@ class ControlPanel:
         slider = Slider(0, self._cursor_y, self.width, label,
                         min_val, max_val, value, fmt, step, on_change)
         section.add_child(slider)
-        self._cursor_y += slider.height + 6
+        self._cursor_y += slider.height + 3
         return slider
 
     def add_spacer(self, height=8):
         self._cursor_y += height
 
+    def _scroll(self, amount):
+        """Scroll panel by amount (positive = down)."""
+        self._content_height = max(self.height, self._cursor_y + 8)
+        self.scroll_offset += amount
+        max_scroll = max(0, self._content_height - self.height)
+        self.scroll_offset = max(0, min(self.scroll_offset, max_scroll))
+
+    def _mouse_over_panel(self):
+        mx, my = pygame.mouse.get_pos()
+        return (self.x <= mx <= self.x + self.width and
+                self.y <= my <= self.y + self.height)
+
     def handle_event(self, event):
         """Process events, adjusting coordinates for panel position."""
-        # Create adjusted event with local coordinates
+        # Mouse wheel scrolling (MOUSEWHEEL event)
+        # Use precise_y for macOS trackpad (event.y rounds to 0 for small scrolls)
+        if event.type == pygame.MOUSEWHEEL:
+            if self._mouse_over_panel():
+                scroll_y = getattr(event, 'precise_y', event.y)
+                if scroll_y == 0:
+                    scroll_y = event.y
+                self._scroll(-scroll_y * 20)
+                return True
+            return False
+
+        # Mouse wheel scrolling (button 4/5 fallback for some platforms)
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
+            if self._mouse_over_panel():
+                self._scroll(-30 if event.button == 4 else 30)
+                return True
+            return False
+
+        # Create adjusted event with local coordinates (offset by scroll)
         if hasattr(event, 'pos'):
-            local_pos = (event.pos[0] - self.x, event.pos[1] - self.y)
-            # Only handle if within panel bounds
-            if not (0 <= local_pos[0] <= self.width and 0 <= local_pos[1] <= self.height):
+            screen_local = (event.pos[0] - self.x, event.pos[1] - self.y)
+            # Only handle if within visible panel bounds
+            if not (0 <= screen_local[0] <= self.width and 0 <= screen_local[1] <= self.height):
                 # Still need to handle mouse up for dragging sliders
                 if event.type == pygame.MOUSEBUTTONUP:
                     for widget in self.widgets:
                         if hasattr(widget, 'dragging'):
                             widget.dragging = False
                 return False
-            # Create a modified event
+            # Offset y by scroll position so widgets get content-space coords
+            local_pos = (screen_local[0], screen_local[1] + self.scroll_offset)
             adjusted = pygame.event.Event(event.type, {
                 **{k: v for k, v in event.__dict__.items() if k != 'pos'},
                 'pos': local_pos
@@ -442,14 +475,31 @@ class ControlPanel:
         return False
 
     def draw(self, target_surface, font):
-        """Draw the panel onto the target surface."""
+        """Draw the panel onto the target surface with scroll support."""
+        # Ensure content surface is large enough
+        self._content_height = max(self.height, self._cursor_y + 8)
+        needed_h = self._content_height
+        if self.surface.get_height() < needed_h or self.surface.get_width() != self.width:
+            self.surface = pygame.Surface((self.width, needed_h))
+
         self.surface.fill(THEME["panel"])
 
         # Panel border
         pygame.draw.line(self.surface, THEME["divider"],
-                         (0, 0), (0, self.height))
+                         (0, 0), (0, needed_h))
 
         for widget in self.widgets:
             widget.draw(self.surface, font)
 
-        target_surface.blit(self.surface, (self.x, self.y))
+        # Blit visible portion (scrolled)
+        max_scroll = max(0, self._content_height - self.height)
+        self.scroll_offset = max(0, min(self.scroll_offset, max_scroll))
+        target_surface.blit(self.surface, (self.x, self.y),
+                            (0, self.scroll_offset, self.width, self.height))
+
+        # Scrollbar indicator (only when content overflows)
+        if max_scroll > 0:
+            bar_h = max(20, int(self.height * self.height / self._content_height))
+            bar_y = int(self.scroll_offset / max_scroll * (self.height - bar_h))
+            bar_rect = pygame.Rect(self.x + self.width - 4, self.y + bar_y, 3, bar_h)
+            pygame.draw.rect(target_surface, THEME["text_dim"], bar_rect, border_radius=1)

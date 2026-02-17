@@ -36,6 +36,7 @@ from .presets import (
     get_preset, get_presets_for_engine,
 )
 from .controls import ControlPanel, THEME
+from .smoothing import SmoothedParameter, LeniaParameterCoupler, SurvivalGuardian
 
 
 PANEL_WIDTH = 300
@@ -190,6 +191,11 @@ class Viewer:
         # LFO system for Lenia mu/sigma/T modulation (sinusoidal breathing)
         self.lfo_system = None  # Initialized in _apply_preset
 
+        # Smoothed parameter infrastructure (EMA drift for organic control)
+        self.smoothed_params = {}  # key -> SmoothedParameter instances
+        self.param_coupler = None  # LeniaParameterCoupler (Lenia only)
+        self.survival_guardian = None  # SurvivalGuardian (Lenia only)
+
         # Containment field: soft radial decay to keep patterns centered
         self._containment = self._build_containment(sim_size)
         # Center noise mask: gaussian blob for interior perturbation
@@ -319,6 +325,20 @@ class Viewer:
         # Create new LFO system from preset (or None for non-Lenia engines)
         self.lfo_system = LeniaLFOSystem(preset) if new_engine_name == "lenia" else None
 
+        # Create smoothed parameters for all engine sliders
+        self.smoothed_params = {}
+        for sdef in self.engine.__class__.get_slider_defs():
+            key = sdef["key"]
+            params = self.engine.get_params()
+            # Vary time constants for organic independence
+            tau = {"mu": 2.0, "sigma": 2.2, "T": 2.5, "R": 2.5}.get(key, 2.0)
+            sp = SmoothedParameter(params.get(key, sdef["default"]), time_constant=tau)
+            self.smoothed_params[key] = sp
+
+        # Create parameter coupler and survival guardian (Lenia only)
+        self.param_coupler = LeniaParameterCoupler(preset) if new_engine_name == "lenia" else None
+        self.survival_guardian = SurvivalGuardian(self.engine) if new_engine_name == "lenia" else None
+
         # Rebuild panel if engine changed and panel exists
         if engine_changed and self.panel is not None:
             self._build_panel()
@@ -440,18 +460,39 @@ class Viewer:
     def _make_param_callback(self, key):
         """Create a callback that updates a single engine parameter."""
         def callback(val):
-            if self.engine_name == "lenia" and key == "R":
-                self.engine.set_params(**{key: int(val)})
-            elif key in ("T", "R", "num_states", "threshold"):
-                self.engine.set_params(**{key: int(val)})
-            else:
-                self.engine.set_params(**{key: val})
-            # Update LFO base when user adjusts mu/sigma via slider
-            if self.lfo_system:
-                if key == "mu":
-                    self.lfo_system.mu_lfo.base_value = val
-                elif key == "sigma":
-                    self.lfo_system.sigma_lfo.base_value = val
+            # Set target on smoothed parameter instead of calling engine directly
+            if key in self.smoothed_params:
+                # For Lenia mu/sigma: apply coupling before setting targets
+                if self.param_coupler and key in ("mu", "sigma"):
+                    # Get current targets (or current values if not set yet)
+                    mu_target = self.smoothed_params["mu"].target if "mu" in self.smoothed_params else val
+                    sigma_target = self.smoothed_params["sigma"].target if "sigma" in self.smoothed_params else val
+
+                    # Update the target that changed
+                    if key == "mu":
+                        mu_target = val
+                    else:
+                        sigma_target = val
+
+                    # Apply coupling
+                    coupled_mu, coupled_sigma = self.param_coupler.couple(mu_target, sigma_target)
+
+                    # Set both targets (coupling affects both)
+                    self.smoothed_params["mu"].set_target(coupled_mu)
+                    self.smoothed_params["sigma"].set_target(coupled_sigma)
+
+                    # Update LFO bases
+                    if self.lfo_system:
+                        self.lfo_system.mu_lfo.base_value = coupled_mu
+                        self.lfo_system.sigma_lfo.base_value = coupled_sigma
+                else:
+                    # Non-coupled parameter: just set target
+                    self.smoothed_params[key].set_target(val)
+
+                    # Update LFO base for T (if applicable)
+                    if self.lfo_system and key == "T":
+                        self.lfo_system.T_lfo.base_value = val
+                        self.lfo_system.T_lfo.amplitude = val * 0.25
         return callback
 
     def _on_engine_select(self, idx, name):
@@ -484,6 +525,11 @@ class Viewer:
         if self.engine_name == "lenia" and "R" in params:
             params["R"] = self._scale_R(params["R"])
         self.engine.set_params(**params)
+        # Snap smoothed params to current values (immediate reset, no smoothing)
+        for key, sp in self.smoothed_params.items():
+            current_params = self.engine.get_params()
+            if key in current_params:
+                sp.snap(current_params[key])
         # Reseed
         seed_kwargs = {}
         if "density" in preset:
@@ -607,7 +653,22 @@ class Viewer:
             if not self.paused and self.lfo_system:
                 self.lfo_system.update(dt)
                 modulated = self.lfo_system.get_modulated_params()
-                self.engine.set_params(**modulated)
+                # Update smoothed parameter targets with LFO output
+                for key, val in modulated.items():
+                    if key in self.smoothed_params:
+                        self.smoothed_params[key].set_target(val)
+
+            # Update smoothed parameters (EMA drift toward targets)
+            if not self.paused and self.smoothed_params:
+                for key, sp in self.smoothed_params.items():
+                    sp.update(dt)
+                # Apply current smoothed values to engine
+                smoothed_vals = {k: sp.get_value() for k, sp in self.smoothed_params.items()}
+                # Convert integer params
+                for k in ("T", "R", "num_states", "threshold"):
+                    if k in smoothed_vals:
+                        smoothed_vals[k] = int(smoothed_vals[k])
+                self.engine.set_params(**smoothed_vals)
 
             # Simulation with fractional speed accumulator
             if not self.paused:
@@ -622,18 +683,9 @@ class Viewer:
                         self.engine.world = np.clip(self.engine.world + noise, 0.0, 1.0)
                     self.speed_accumulator -= 1.0
 
-                # Auto-reseed if organism dies (never go black)
-                if self.engine_name == "lenia":
-                    mass = float(self.engine.world.mean())
-                    if mass < 0.002:
-                        preset = get_preset(self.preset_key)
-                        seed_kwargs = {}
-                        if "density" in preset:
-                            seed_kwargs["density"] = preset["density"]
-                        self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
-                        self.iridescent.reset()
-                        if self.lfo_system:
-                            self.lfo_system.reset_phase()
+                # Survival guardian: invisible density injection on near-death
+                if self.survival_guardian:
+                    self.survival_guardian.check_and_rescue(dt)
 
             # Render canvas
             screen.fill(THEME["bg"])

@@ -24,11 +24,11 @@ PALETTES = {
         "d": np.array([0.00, 0.33, 0.67], dtype=np.float32),
     },
     "cuttlefish": {
-        # Vivid organic: cyan, green, yellow, orange, pink, magenta zones
-        # High a+b for full gamut, high c for multiple color cycles
+        # Vivid organic: cyan, magenta, green, yellow, orange, pink zones
+        # High c values = more color cycles across t range = richer variety
         "a": np.array([0.50, 0.50, 0.50], dtype=np.float32),
         "b": np.array([0.50, 0.50, 0.50], dtype=np.float32),
-        "c": np.array([1.8, 1.2, 1.5], dtype=np.float32),      # Different rates = rich mixing
+        "c": np.array([2.5, 1.8, 2.2], dtype=np.float32),      # More cycles = more colors visible
         "d": np.array([0.00, 0.25, 0.55], dtype=np.float32),   # Cyan-green-orange-pink shift
     },
     "bioluminescent": {
@@ -39,16 +39,17 @@ PALETTES = {
         "d": np.array([0.08, 0.30, 0.55], dtype=np.float32),
     },
     "deep_coral": {
-        # Warm vivid: rose, amber, lime, magenta
+        # Warm vivid: rose, amber, lime, magenta, teal — more color cycles
         "a": np.array([0.52, 0.45, 0.48], dtype=np.float32),
         "b": np.array([0.48, 0.42, 0.45], dtype=np.float32),
-        "c": np.array([1.2, 1.8, 1.4], dtype=np.float32),      # Green channel cycles fastest
+        "c": np.array([2.0, 2.5, 1.8], dtype=np.float32),      # More cycles = richer color zones
         "d": np.array([0.00, 0.28, 0.55], dtype=np.float32),
     },
 }
 
-# Pre-compute alpha curve LUT (x^0.6 — vivid colors visible at moderate density)
-_ALPHA_CURVE = np.power(np.linspace(0, 1, 256, dtype=np.float32), 0.6)
+# Pre-compute alpha curve LUT (x^0.85 — translucent at low density, opaque at high)
+# Soft falloff creates layered depth without losing color in thin areas
+_ALPHA_CURVE = np.power(np.linspace(0, 1, 256, dtype=np.float32), 0.85)
 
 
 class IridescentPipeline:

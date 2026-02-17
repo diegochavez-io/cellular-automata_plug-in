@@ -485,9 +485,9 @@ class Viewer:
         center = size / 2.0
         Y, X = np.ogrid[:size, :size]
         dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
-        # Gentle fade: starts at 40% from center, gradual over 30%
-        fade = np.clip((dist - 0.40) / 0.30, 0.0, 1.0)
-        return (1.0 - fade * 0.04).astype(np.float32)
+        # Gentle fade: starts at 35% from center, gradual over 30%
+        fade = np.clip((dist - 0.35) / 0.30, 0.0, 1.0)
+        return (1.0 - fade * 0.05).astype(np.float32)
 
     def _build_noise_mask(self, size):
         """Gaussian mask for center noise injection.
@@ -522,34 +522,46 @@ class Viewer:
         return stir_dx, stir_dy
 
     def _build_color_offset(self, size):
-        """Noise-based spatial color offset for organic color pockets.
+        """Multi-octave noise-based spatial color offset for rich color zones.
 
-        Creates natural-looking regions of different colors across the
-        organism — like pockets of color in nature, not uniform gradients.
-        Uses low-frequency noise blobs + subtle radial variation.
+        Two noise layers (broad + fine) create organic color variation
+        at multiple scales. Even small organisms get distinct color zones.
         """
         center = size / 2.0
         Y, X = np.ogrid[:size, :size]
         dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
 
-        # Radial gradient: 0.0 at center -> 0.35 at edges (broad color shift)
-        radial = np.clip(dist, 0, 1) * 0.35
+        # Radial gradient: 0.0 at center -> 0.6 at edges (strong color shift)
+        radial = np.clip(dist, 0, 1) * 0.6
 
-        # Low-frequency noise blobs for large organic color zones
-        noise_size = max(8, size // 64)
-        noise_small = np.random.randn(noise_size, noise_size).astype(np.float32)
+        # Layer 1: broad color zones (~64px at 1024)
+        noise_size1 = max(8, size // 64)
+        n1 = np.random.randn(noise_size1, noise_size1).astype(np.float32)
         if _scipy_gaussian is not None:
-            noise_small = _scipy_gaussian(noise_small, 1.5)
+            n1 = _scipy_gaussian(n1, 1.5)
         if _scipy_zoom is not None:
-            noise = _scipy_zoom(noise_small, size / noise_size, order=1)[:size, :size]
+            n1 = _scipy_zoom(n1, size / noise_size1, order=1)[:size, :size]
         else:
-            factor = size // noise_size
-            noise = np.repeat(np.repeat(noise_small, factor, axis=0), factor, axis=1)[:size, :size]
-        # Normalize to [-0.5, 0.5] range — wide enough for distinct color zones
-        noise_range = max(noise.max() - noise.min(), 0.001)
-        noise = (noise - noise.min()) / noise_range * 1.0 - 0.5
+            f = size // noise_size1
+            n1 = np.repeat(np.repeat(n1, f, axis=0), f, axis=1)[:size, :size]
+        rng1 = max(n1.max() - n1.min(), 0.001)
+        n1 = (n1 - n1.min()) / rng1 * 1.0 - 0.5  # [-0.5, 0.5]
 
-        return (radial + noise).astype(np.float32)
+        # Layer 2: finer color zones (~32px at 1024) for detail within organisms
+        noise_size2 = max(16, size // 32)
+        n2 = np.random.randn(noise_size2, noise_size2).astype(np.float32)
+        if _scipy_gaussian is not None:
+            n2 = _scipy_gaussian(n2, 1.0)
+        if _scipy_zoom is not None:
+            n2 = _scipy_zoom(n2, size / noise_size2, order=1)[:size, :size]
+        else:
+            f = size // noise_size2
+            n2 = np.repeat(np.repeat(n2, f, axis=0), f, axis=1)[:size, :size]
+        rng2 = max(n2.max() - n2.min(), 0.001)
+        n2 = (n2 - n2.min()) / rng2 * 0.6 - 0.3  # [-0.3, 0.3]
+
+        # Combine: radial + broad zones + fine detail
+        return (radial + n1 + n2).astype(np.float32)
 
     def _build_cca_mask(self, size):
         """Soft circular mask for CCA rendering.
@@ -1299,9 +1311,12 @@ class Viewer:
             world = self.engine.world * self._cca_mask
             world = _blur_world(world, sigma=28)
         elif self.engine_name == "smoothlife":
-            # SmoothLife: contrast curve to prevent blown-out look
-            # SL fields have wide high-value regions; power curve compresses mid-tones
-            world = np.power(self.engine.world, 1.8)
+            # SmoothLife: softer contrast curve — preserves more tonal range
+            # for richer color mapping while still preventing blown-out look
+            world = np.power(self.engine.world, 1.4)
+            # Soft blur for organic edge falloff (no hard binary boundaries)
+            if _scipy_gaussian is not None:
+                world = _scipy_gaussian(world, 2.0)
         else:
             # MNCA, Lenia, others — direct render
             world = self.engine.world
@@ -1324,17 +1339,22 @@ class Viewer:
                 t_offset=self._color_offset,
             )
         elif self.engine_name == "smoothlife":
+            # Edge-heavy color weights: edges get different hues from interiors
             rgb = self.iridescent.render(
                 world, dt, lfo_phase=lfo_phase,
+                color_weights=(0.30, 0.25, 0.45),
                 t_offset=self._color_offset,
             )
-            rgb = self._apply_bloom(rgb, intensity=0.10)
+            rgb = self._apply_bloom(rgb, intensity=0.25)
         else:
+            # Lenia/MNCA: edge-heavy color weights for 3D depth
+            # Edges shift color more → boundaries differ from interiors
             rgb = self.iridescent.render(
                 world, dt, lfo_phase=lfo_phase,
+                color_weights=(0.30, 0.25, 0.45),
                 t_offset=self._color_offset,
             )
-            rgb = self._apply_bloom(rgb, intensity=0.15)
+            rgb = self._apply_bloom(rgb, intensity=0.20)
 
         surface = pygame.surfarray.make_surface(rgb.swapaxes(0, 1).copy())
         return surface

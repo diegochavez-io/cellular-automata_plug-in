@@ -217,24 +217,32 @@ class SmoothLife(CAEngine):
         self.world = np.clip(self.world + noise, 0.0, 1.0)
         self.generation = 0
 
-    def seed_multiple_blobs(self, n_blobs=6, blob_radius=None, density=0.6):
-        """Seed with overlapping dense blobs clustered near center."""
-        if blob_radius is None:
-            blob_radius = max(10, int(self.ra * 2.5))
+    def seed_multiple_blobs(self, n_blobs=10, blob_radius=None, density=0.6):
+        """Seed with highly varied blobs — different sizes, positions, densities.
+
+        Uses log-uniform radius distribution so tiny specks are as likely
+        as large masses. Creates organic, non-repetitive initial conditions.
+        """
+        base_radius = blob_radius if blob_radius is not None else max(10, int(self.ra * 2.5))
         self.world[:] = 0
         center = self.size // 2
-        scatter = self.size * 0.12
+        scatter = self.size * 0.25
         Y, X = np.ogrid[:self.size, :self.size]
         for _ in range(n_blobs):
+            # Log-uniform radius: 25% to 250% of base (natural scale variety)
+            r = int(base_radius * np.exp(np.random.uniform(np.log(0.25), np.log(2.5))))
+            r = max(5, r)
+            # Per-blob density variation
+            blob_density = density * (0.5 + np.random.random() * 0.5)
             cy = int(center + np.random.randn() * scatter)
             cx = int(center + np.random.randn() * scatter)
-            cy = max(blob_radius, min(self.size - blob_radius, cy))
-            cx = max(blob_radius, min(self.size - blob_radius, cx))
+            cy = max(r, min(self.size - r, cy))
+            cx = max(r, min(self.size - r, cx))
             dist = np.sqrt((X - cx)**2 + (Y - cy)**2).astype(np.float64)
-            # Dense blob: near-binary values
-            mask = dist < blob_radius
-            values = np.random.random((self.size, self.size)) * 0.25 + 0.75
-            self.world = np.where(mask, np.maximum(self.world, values * density), self.world)
+            # Soft gaussian edge instead of hard circle for organic feel
+            blob = np.exp(-0.5 * (dist / (r * 0.7)) ** 2) * blob_density
+            values = np.random.random((self.size, self.size)) * 0.2 + 0.8
+            self.world = np.maximum(self.world, blob * values)
         # Break symmetry
         noise = np.random.randn(self.size, self.size) * 0.03
         self.world = np.clip(self.world + noise, 0.0, 1.0)

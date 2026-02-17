@@ -160,23 +160,31 @@ class Lenia(CAEngine):
         self.generation = 0
 
     def seed_multiple_blobs(self, n_blobs=8, blob_radius=None, density=0.6):
-        """Seed with overlapping gaussian blobs clustered near center."""
-        if blob_radius is None:
-            blob_radius = self.size // 10
+        """Seed with varied-size gaussian blobs scattered near center.
+
+        Each blob gets a random radius (40%-200% of base) and random density
+        (50%-100%) so the initial seed looks organic, not repetitive.
+        """
+        base_radius = blob_radius if blob_radius is not None else self.size // 10
         self.world[:] = 0
         center = self.size // 2
         # Scatter radius — blobs stay within central 40% of frame
         scatter = self.size * 0.2
         Y, X = np.ogrid[:self.size, :self.size]
         for _ in range(n_blobs):
+            # Varied radius: 40% to 200% of base for organic size variety
+            r = int(base_radius * (0.4 + np.random.random() * 1.6))
+            r = max(5, r)
+            # Per-blob density variation
+            blob_density = density * (0.5 + np.random.random() * 0.5)
             # Center-biased placement (gaussian scatter)
             cy = int(center + np.random.randn() * scatter)
             cx = int(center + np.random.randn() * scatter)
-            cy = max(blob_radius, min(self.size - blob_radius, cy))
-            cx = max(blob_radius, min(self.size - blob_radius, cx))
+            cy = max(r, min(self.size - r, cy))
+            cx = max(r, min(self.size - r, cx))
             dist = np.sqrt((X - cx)**2 + (Y - cy)**2).astype(np.float64)
             # Smooth gaussian blob — no hard edge
-            blob = np.exp(-0.5 * (dist / (blob_radius * 0.5)) ** 2) * density
+            blob = np.exp(-0.5 * (dist / (r * 0.5)) ** 2) * blob_density
             # Add noise texture within the blob
             noise = np.random.random((self.size, self.size)) * 0.4 + 0.6
             self.world += blob * noise

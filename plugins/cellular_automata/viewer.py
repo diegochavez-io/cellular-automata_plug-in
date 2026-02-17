@@ -198,6 +198,9 @@ class Viewer:
         self.preset_morpher = PresetMorpher(morph_duration=2.5)
         self._initial_load = True  # Track initial load to avoid morphing on startup
 
+        # High-level character control (calm to energetic)
+        self.character_value = 0.5
+
         # Containment field: soft radial decay to keep patterns centered
         self._containment = self._build_containment(sim_size)
         # Center noise mask: gaussian blob for interior perturbation
@@ -396,6 +399,9 @@ class Viewer:
             self.sliders["brush"].set_value(self.brush_radius)
         if "lfo_speed" in self.sliders and self.lfo_system:
             self.sliders["lfo_speed"].set_value(self.lfo_system.lfo_speed)
+        # Character slider
+        if "character" in self.sliders:
+            self.sliders["character"].set_value(self.character_value)
         # Iridescent color sliders
         if "tint_r" in self.sliders:
             self.sliders["tint_r"].set_value(self.iridescent.tint_r)
@@ -429,6 +435,14 @@ class Viewer:
             preset_names, selected=preset_idx,
             on_select=self._on_preset_select
         )
+
+        # --- Character slider (high-level control for Lenia) ---
+        if self.engine_name == "lenia":
+            panel.add_section("CHARACTER")
+            self.sliders["character"] = panel.add_slider(
+                "Character", 0.0, 1.0, 0.5, fmt=".2f",
+                on_change=self._on_character_change
+            )
 
         # --- Engine-specific sliders ---
         current_section = None
@@ -552,6 +566,38 @@ class Viewer:
         if self.lfo_system:
             self.lfo_system.lfo_speed = val
 
+    def _on_character_change(self, val):
+        """Update character value (calm to energetic)."""
+        self.character_value = val
+
+        # Get preset baseline mu/sigma
+        preset = get_preset(self.preset_key)
+        base_mu = preset.get("mu", 0.15)
+        base_sigma = preset.get("sigma", 0.017)
+
+        # Character 0.5 = baseline. Scale: +/-30% of safe range
+        mu_range = 0.06  # +/-0.06 from baseline
+        sigma_range = 0.012  # +/-0.012 from baseline
+
+        offset = (val - 0.5) * 2.0  # Map [0,1] to [-1,1]
+        target_mu = base_mu + offset * mu_range
+        target_sigma = base_sigma + offset * sigma_range
+
+        # Apply coupling
+        if self.param_coupler:
+            target_mu, target_sigma = self.param_coupler.couple(target_mu, target_sigma)
+
+        # Set SmoothedParameter targets
+        if "mu" in self.smoothed_params:
+            self.smoothed_params["mu"].set_target(target_mu)
+        if "sigma" in self.smoothed_params:
+            self.smoothed_params["sigma"].set_target(target_sigma)
+
+        # Update LFO base values so breathing centers on new character
+        if self.lfo_system:
+            self.lfo_system.mu_lfo.base_value = target_mu
+            self.lfo_system.sigma_lfo.base_value = target_sigma
+
     def _on_reset(self):
         preset = get_preset(self.preset_key)
         # Re-apply preset params to ensure clean state
@@ -565,6 +611,8 @@ class Viewer:
             current_params = self.engine.get_params()
             if key in current_params:
                 sp.snap(current_params[key])
+        # Reset character to neutral
+        self.character_value = 0.5
         # Reseed
         seed_kwargs = {}
         if "density" in preset:

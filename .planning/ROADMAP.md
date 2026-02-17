@@ -57,10 +57,11 @@ Plans:
   2. User can rapidly drag any slider from min to max without killing the organism
   3. Coral preset survives stress test: dragging mu slider from 0.12 to edges and back 5+ times
   4. Parameter values are clamped to safe bounds specific to each engine type
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: TBD during planning
+- [ ] 03-01-PLAN.md — EMA-smoothed parameters, mu/sigma coupling, invisible survival guardian
+- [ ] 03-02-PLAN.md — Smooth preset morphing, Character slider, stress test verification
 
 ### Phase 4: Preset Cleanup & UI Simplification
 **Goal**: Clean preset library with streamlined control panel
@@ -122,7 +123,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. LFO Smoothing | 1/1 | Complete | 2026-02-16 |
 | 2. Iridescent Color Pipeline | 2/2 | Complete | 2026-02-16 |
-| 3. Safe Parameter Control | 0/TBD | Not started | - |
+| 3. Safe Parameter Control | 0/2 | Planned | - |
 | 4. Preset Cleanup & UI Simplification | 0/TBD | Not started | - |
 | 5. Physarum & DLA Engines | 0/TBD | Not started | - |
 | 6. Remaining Engines | 0/TBD | Not started | - |

@@ -145,7 +145,130 @@ PRESETS = {
     },
 
     # =====================================================================
-    # GRAY-SCOTT REACTION-DIFFUSION
+    # SMOOTHLIFE (continuous Life — smooth fields, never static)
+    # =====================================================================
+    "sl_gliders": {
+        "engine": "smoothlife",
+        "name": "SmoothLife Glider",
+        "description": "Classic traveling blobs that glide and interact",
+        "ri": 8, "ra": 24,
+        "b1": 0.278, "b2": 0.365, "d1": 0.267, "d2": 0.445,
+        "alpha_n": 0.028, "alpha_m": 0.147, "dt": 0.12,
+        "seed": "blobs",
+    },
+    "sl_worms": {
+        "engine": "smoothlife",
+        "name": "SmoothLife Worm",
+        "description": "Elongated crawling structures that wriggle",
+        "ri": 10, "ra": 30,
+        "b1": 0.257, "b2": 0.336, "d1": 0.267, "d2": 0.445,
+        "alpha_n": 0.028, "alpha_m": 0.147, "dt": 0.10,
+        "seed": "blobs",
+        "palette": "deep_coral",
+    },
+    "sl_elastic": {
+        "engine": "smoothlife",
+        "name": "SmoothLife Elastic",
+        "description": "Blobs connected by stretching elastic cords",
+        "ri": 9, "ra": 27,
+        "b1": 0.210, "b2": 0.330, "d1": 0.210, "d2": 0.500,
+        "alpha_n": 0.020, "alpha_m": 0.130, "dt": 0.12,
+        "seed": "blobs",
+        "palette": "bioluminescent",
+    },
+    "sl_pulse": {
+        "engine": "smoothlife",
+        "name": "SmoothLife Pulse",
+        "description": "Pulsing oscillating blobs that breathe in place",
+        "ri": 8, "ra": 24,
+        "b1": 0.270, "b2": 0.380, "d1": 0.260, "d2": 0.450,
+        "alpha_n": 0.035, "alpha_m": 0.140, "dt": 0.15,
+        "seed": "random",
+        "palette": "cuttlefish",
+    },
+    "sl_chaos": {
+        "engine": "smoothlife",
+        "name": "SmoothLife Chaos",
+        "description": "Turbulent mixing regime with constant activity",
+        "ri": 7, "ra": 21,
+        "b1": 0.230, "b2": 0.380, "d1": 0.190, "d2": 0.480,
+        "alpha_n": 0.015, "alpha_m": 0.100, "dt": 0.12,
+        "seed": "random",
+        "palette": "oil_slick",
+    },
+
+    # =====================================================================
+    # MNCA — Multi-Neighborhood Cellular Automata (continuous solitons)
+    # =====================================================================
+    "mnca_soliton": {
+        "engine": "mnca",
+        "name": "MNCA Soliton",
+        "description": "Resilient traveling blobs that bounce and persist",
+        "rings": [(0, 6), (8, 18)],
+        "rules": [
+            [{"low": 0.12, "high": 0.32}],
+            [{"low": 0.08, "high": 0.32}],
+        ],
+        "delta": 0.04,
+        "seed": "random",
+    },
+    "mnca_mitosis": {
+        "engine": "mnca",
+        "name": "MNCA Mitosis",
+        "description": "Cells that grow, split, and divide like organisms",
+        "rings": [(0, 6), (6, 12), (12, 20)],
+        "rules": [
+            [{"low": 0.18, "high": 0.28}],
+            [{"low": 0.30, "high": 0.50}],
+            [{"low": 0.10, "high": 0.20}],
+        ],
+        "delta": 0.04,
+        "seed": "blobs",
+        "palette": "bioluminescent",
+    },
+    "mnca_worm": {
+        "engine": "mnca",
+        "name": "MNCA Worm",
+        "description": "Elongated worm-like structures that crawl",
+        "rings": [(0, 3), (5, 10), (12, 18)],
+        "rules": [
+            [{"low": 0.22, "high": 0.32}],
+            [{"low": 0.15, "high": 0.35}],
+            [{"low": 0.05, "high": 0.15}],
+        ],
+        "delta": 0.035,
+        "seed": "blobs",
+        "palette": "deep_coral",
+    },
+    "mnca_hunt": {
+        "engine": "mnca",
+        "name": "MNCA Hunt",
+        "description": "Small cells that chase and interact with each other",
+        "rings": [(0, 5), (8, 16)],
+        "rules": [
+            [{"low": 0.15, "high": 0.35}],
+            [{"low": 0.10, "high": 0.35}],
+        ],
+        "delta": 0.05,
+        "seed": "random",
+        "palette": "cuttlefish",
+    },
+    "mnca_coral": {
+        "engine": "mnca",
+        "name": "MNCA Coral",
+        "description": "Branching growth patterns that spread and fill",
+        "rings": [(0, 8), (12, 22)],
+        "rules": [
+            [{"low": 0.08, "high": 0.28}],
+            [{"low": 0.05, "high": 0.25}],
+        ],
+        "delta": 0.03,
+        "seed": "random",
+        "palette": "oil_slick",
+    },
+
+    # =====================================================================
+    # GRAY-SCOTT REACTION-DIFFUSION (kept in code, not shown in UI)
     # =====================================================================
     "reef": {
         "engine": "gray_scott",
@@ -184,7 +307,7 @@ PRESETS = {
     },
 
     # =====================================================================
-    # CYCLIC CELLULAR AUTOMATA (never reaches equilibrium)
+    # CYCLIC CELLULAR AUTOMATA (kept in code, not shown in UI)
     # =====================================================================
     "whirlpool": {
         "engine": "cca",
@@ -232,10 +355,10 @@ UNIFIED_ORDER = [
     # Lenia
     "coral", "amoeba", "jellyfish", "lava_lamp", "nebula",
     "tide_pool", "mycelium", "heartbeat",
-    # Gray-Scott
-    "reef", "deep_sea", "medusa", "labyrinth", "tentacles",
-    # Cyclic CA
-    "whirlpool", "magma", "aurora", "vortex", "storm",
+    # SmoothLife
+    "sl_gliders", "sl_worms", "sl_elastic", "sl_pulse", "sl_chaos",
+    # MNCA
+    "mnca_soliton", "mnca_mitosis", "mnca_worm", "mnca_hunt", "mnca_coral",
 ]
 
 # Legacy per-engine ordering (kept for compatibility)
@@ -249,6 +372,12 @@ PRESET_ORDERS = {
     ],
     "excitable": [
         "spiral", "turbulent", "target",
+    ],
+    "smoothlife": [
+        "sl_gliders", "sl_worms", "sl_elastic", "sl_pulse", "sl_chaos",
+    ],
+    "mnca": [
+        "mnca_soliton", "mnca_mitosis", "mnca_worm", "mnca_hunt", "mnca_coral",
     ],
     "gray_scott": [
         "reef", "deep_sea", "medusa", "labyrinth", "tentacles",
@@ -265,7 +394,7 @@ for _keys in PRESET_ORDERS.values():
         if _k not in PRESET_ORDER:
             PRESET_ORDER.append(_k)
 
-ENGINE_ORDER = ["lenia", "life", "excitable", "gray_scott", "cca"]
+ENGINE_ORDER = ["lenia", "smoothlife", "mnca", "life", "excitable", "gray_scott", "cca"]
 
 
 def get_preset(name):

@@ -31,6 +31,8 @@ from .life import Life
 from .excitable import Excitable
 from .gray_scott import GrayScott
 from .cca import CCA
+from .smoothlife import SmoothLife
+from .mnca import MNCA
 from .iridescent import IridescentPipeline
 from .presets import (
     PRESETS, PRESET_ORDER, PRESET_ORDERS, ENGINE_ORDER, UNIFIED_ORDER,
@@ -94,6 +96,8 @@ ENGINE_CLASSES = {
     "excitable": Excitable,
     "gray_scott": GrayScott,
     "cca": CCA,
+    "smoothlife": SmoothLife,
+    "mnca": MNCA,
 }
 
 ENGINE_LABELS = {
@@ -102,6 +106,8 @@ ENGINE_LABELS = {
     "excitable": "Excitable",
     "gray_scott": "Gray-Scott",
     "cca": "Cyclic CA",
+    "smoothlife": "SmoothLife",
+    "mnca": "MNCA",
 }
 
 
@@ -242,6 +248,70 @@ class GrayScottLFOSystem:
         self.feed_lfo.reset()
 
 
+class SmoothLifeLFOSystem:
+    """LFO system for SmoothLife birth interval modulation.
+
+    Modulates b1 and b2 (birth thresholds) with slow sinusoids.
+    Shifting the birth window creates organic breathing — structures
+    expand when birth window widens, contract when it narrows.
+    """
+
+    def __init__(self, preset):
+        base_b1 = preset.get("b1", 0.278)
+        base_b2 = preset.get("b2", 0.365)
+        self.b1_lfo = SinusoidalLFO(base_b1, 0.015, frequency_hz=1.0 / 70.0)  # ~70s period
+        self.b2_lfo = SinusoidalLFO(base_b2, 0.015, frequency_hz=1.0 / 85.0)  # ~85s period
+        self.lfo_speed = 1.0
+
+    def update(self, dt):
+        scaled_dt = dt * self.lfo_speed
+        self.b1_lfo.update(scaled_dt)
+        self.b2_lfo.update(scaled_dt)
+
+    def get_modulated_params(self):
+        return {
+            "b1": self.b1_lfo.get_value(),
+            "b2": self.b2_lfo.get_value(),
+        }
+
+    def reset_from_preset(self, preset):
+        self.b1_lfo.base_value = preset.get("b1", 0.278)
+        self.b2_lfo.base_value = preset.get("b2", 0.365)
+
+    def reset_phase(self):
+        self.b1_lfo.reset()
+        self.b2_lfo.reset()
+
+
+class MNCALFOSystem:
+    """LFO system for MNCA delta modulation.
+
+    Modulates delta (increment magnitude) with a sinusoid.
+    Larger delta = more aggressive growth/decay = faster evolution.
+    Smaller delta = slower, more subtle changes.
+    """
+
+    def __init__(self, preset):
+        base_delta = preset.get("delta", 0.05)
+        # Modulate delta by +/- 30% of base value
+        self.delta_lfo = SinusoidalLFO(base_delta, base_delta * 0.30, frequency_hz=1.0 / 60.0)  # ~60s
+        self.lfo_speed = 1.0
+
+    def update(self, dt):
+        self.delta_lfo.update(dt * self.lfo_speed)
+
+    def get_modulated_params(self):
+        return {"delta": max(0.001, self.delta_lfo.get_value())}
+
+    def reset_from_preset(self, preset):
+        base_delta = preset.get("delta", 0.05)
+        self.delta_lfo.base_value = base_delta
+        self.delta_lfo.amplitude = base_delta * 0.30
+
+    def reset_phase(self):
+        self.delta_lfo.reset()
+
+
 class Viewer:
     def __init__(self, width=900, height=900, sim_size=1024, start_preset="coral"):
         self.canvas_w = width
@@ -267,6 +337,10 @@ class Viewer:
         self.lfo_system = None  # Initialized in _apply_preset
         # LFO system for Gray-Scott feed modulation (breathing)
         self.gs_lfo_system = None  # Initialized in _apply_preset
+        # LFO system for SmoothLife birth interval modulation
+        self.sl_lfo_system = None  # Initialized in _apply_preset
+        # LFO system for MNCA delta modulation
+        self.mnca_lfo_system = None  # Initialized in _apply_preset
 
         # Smoothed parameter infrastructure (EMA drift for organic slider control)
         self.smoothed_params = {}  # key -> SmoothedParameter instances
@@ -406,6 +480,34 @@ class Viewer:
                 threshold=preset.get("threshold", 1),
                 num_states=preset.get("num_states", 14),
             )
+        elif engine_name == "smoothlife":
+            # Scale kernel radii for current sim resolution (presets tuned for BASE_RES)
+            ri = max(3, int(preset.get("ri", 8) * self.res_scale))
+            ra = max(ri + 3, int(preset.get("ra", 24) * self.res_scale))
+            return cls(
+                size=self.sim_size,
+                ri=ri, ra=ra,
+                b1=preset.get("b1", 0.278),
+                b2=preset.get("b2", 0.365),
+                d1=preset.get("d1", 0.267),
+                d2=preset.get("d2", 0.445),
+                alpha_n=preset.get("alpha_n", 0.028),
+                alpha_m=preset.get("alpha_m", 0.147),
+                dt=preset.get("dt", 0.1),
+            )
+        elif engine_name == "mnca":
+            # Scale ring radii for current sim resolution (presets tuned for BASE_RES)
+            raw_rings = preset.get("rings") or [(0, 5), (8, 15)]
+            scaled_rings = [
+                (max(0, int(ir * self.res_scale)), max(2, int(orr * self.res_scale)))
+                for ir, orr in raw_rings
+            ]
+            return cls(
+                size=self.sim_size,
+                rings=scaled_rings,
+                rules=preset.get("rules"),
+                delta=preset.get("delta", 0.05),
+            )
 
     def _apply_preset(self, key):
         """Apply a preset, creating a new engine if needed."""
@@ -425,9 +527,19 @@ class Viewer:
         else:
             # Same engine type - just update params
             params = {k: v for k, v in preset.items()
-                      if k not in ("engine", "name", "description", "seed", "density")}
+                      if k not in ("engine", "name", "description", "seed", "density", "palette")}
             if new_engine_name == "lenia" and "R" in params:
                 params["R"] = self._scale_R(params["R"])
+            if new_engine_name == "smoothlife":
+                if "ri" in params:
+                    params["ri"] = max(3, int(params["ri"] * self.res_scale))
+                if "ra" in params:
+                    params["ra"] = max(params.get("ri", 6) + 3, int(params["ra"] * self.res_scale))
+            if new_engine_name == "mnca" and "rings" in params:
+                params["rings"] = [
+                    (max(0, int(ir * self.res_scale)), max(2, int(orr * self.res_scale)))
+                    for ir, orr in params["rings"]
+                ]
             self.engine.set_params(**params)
 
         # Seed
@@ -446,13 +558,18 @@ class Viewer:
         # Create LFO systems from preset (engine-specific)
         self.lfo_system = LeniaLFOSystem(preset) if new_engine_name == "lenia" else None
         self.gs_lfo_system = GrayScottLFOSystem(preset) if new_engine_name == "gray_scott" else None
+        self.sl_lfo_system = SmoothLifeLFOSystem(preset) if new_engine_name == "smoothlife" else None
+        self.mnca_lfo_system = MNCALFOSystem(preset) if new_engine_name == "mnca" else None
 
         # Hue cycling speed per engine
         if new_engine_name == "gray_scott":
             self.iridescent._hue_per_breath = 0.20
         elif new_engine_name == "cca":
-            # CCA always evolves — faster hue cycling for constant color change
             self.iridescent._hue_per_breath = 0.12
+        elif new_engine_name == "smoothlife":
+            self.iridescent._hue_per_breath = 0.10
+        elif new_engine_name == "mnca":
+            self.iridescent._hue_per_breath = 0.10
         else:
             self.iridescent._hue_per_breath = 0.08
 
@@ -504,6 +621,10 @@ class Viewer:
                 self.sliders["lfo_speed"].set_value(self.lfo_system.lfo_speed)
             elif self.gs_lfo_system:
                 self.sliders["lfo_speed"].set_value(self.gs_lfo_system.lfo_speed)
+            elif self.sl_lfo_system:
+                self.sliders["lfo_speed"].set_value(self.sl_lfo_system.lfo_speed)
+            elif self.mnca_lfo_system:
+                self.sliders["lfo_speed"].set_value(self.mnca_lfo_system.lfo_speed)
         # Hue slider
         if "hue" in self.sliders:
             self.sliders["hue"].set_value(getattr(self, '_hue_value', 0.25))
@@ -636,6 +757,10 @@ class Viewer:
             self.lfo_system.lfo_speed = val
         if self.gs_lfo_system:
             self.gs_lfo_system.lfo_speed = val
+        if self.sl_lfo_system:
+            self.sl_lfo_system.lfo_speed = val
+        if self.mnca_lfo_system:
+            self.mnca_lfo_system.lfo_speed = val
 
     def _on_hue_change(self, val):
         """Update hue via cosine color wheel."""
@@ -646,9 +771,19 @@ class Viewer:
         preset = get_preset(self.preset_key)
         # Re-apply preset params to ensure clean state
         params = {k: v for k, v in preset.items()
-                  if k not in ("engine", "name", "description", "seed", "density")}
+                  if k not in ("engine", "name", "description", "seed", "density", "palette")}
         if self.engine_name == "lenia" and "R" in params:
             params["R"] = self._scale_R(params["R"])
+        if self.engine_name == "smoothlife":
+            if "ri" in params:
+                params["ri"] = max(3, int(params["ri"] * self.res_scale))
+            if "ra" in params:
+                params["ra"] = max(params.get("ri", 6) + 3, int(params["ra"] * self.res_scale))
+        if self.engine_name == "mnca" and "rings" in params:
+            params["rings"] = [
+                (max(0, int(ir * self.res_scale)), max(2, int(orr * self.res_scale)))
+                for ir, orr in params["rings"]
+            ]
         self.engine.set_params(**params)
         # Snap smoothed params to current values (immediate reset, no smoothing)
         for key, sp in self.smoothed_params.items():
@@ -669,6 +804,12 @@ class Viewer:
         if self.gs_lfo_system:
             self.gs_lfo_system.reset_phase()
             self.gs_lfo_system.reset_from_preset(preset)
+        if self.sl_lfo_system:
+            self.sl_lfo_system.reset_phase()
+            self.sl_lfo_system.reset_from_preset(preset)
+        if self.mnca_lfo_system:
+            self.mnca_lfo_system.reset_phase()
+            self.mnca_lfo_system.reset_from_preset(preset)
         self._sync_sliders_from_engine()
 
     def _on_clear(self):
@@ -684,6 +825,10 @@ class Viewer:
             lfo_phase = self.lfo_system.mu_lfo.phase
         elif self.gs_lfo_system:
             lfo_phase = self.gs_lfo_system.feed_lfo.phase
+        elif self.sl_lfo_system:
+            lfo_phase = self.sl_lfo_system.b1_lfo.phase
+        elif self.mnca_lfo_system:
+            lfo_phase = self.mnca_lfo_system.delta_lfo.phase
 
         if self.engine_name == "gray_scott":
             # Soft rendering: blur world for organic blobby look,
@@ -705,6 +850,21 @@ class Viewer:
                 t_offset=self._color_offset,
             )
             rgb = self._apply_bloom(rgb, intensity=0.4)
+        elif self.engine_name == "smoothlife":
+            # SmoothLife: continuous fields are already smooth, just light bloom
+            rgb = self.iridescent.render(
+                self.engine.world, dt, lfo_phase=lfo_phase,
+                t_offset=self._color_offset,
+            )
+            rgb = self._apply_bloom(rgb, intensity=0.4)
+        elif self.engine_name == "mnca":
+            # MNCA: light blur for fluffy organic feel + bloom for glow
+            world = _blur_world(self.engine.world, sigma=7)
+            rgb = self.iridescent.render(
+                world, dt, lfo_phase=lfo_phase,
+                t_offset=self._color_offset,
+            )
+            rgb = self._apply_bloom(rgb, intensity=0.5)
         else:
             rgb = self.iridescent.render(self.engine.world, dt, lfo_phase=lfo_phase)
 
@@ -872,6 +1032,38 @@ class Viewer:
                         if k != "feed":
                             modulated[k] = sp.get_value()
                     self.engine.set_params(**modulated)
+                elif self.sl_lfo_system:
+                    # SmoothLife: Feed smoothed b1/b2 as LFO base values
+                    if "b1" in self.smoothed_params:
+                        self.sl_lfo_system.b1_lfo.base_value = self.smoothed_params["b1"].get_value()
+                    if "b2" in self.smoothed_params:
+                        self.sl_lfo_system.b2_lfo.base_value = self.smoothed_params["b2"].get_value()
+                    self.sl_lfo_system.update(dt)
+                    modulated = self.sl_lfo_system.get_modulated_params()
+                    # Apply non-LFO smoothed params directly
+                    for k, sp in self.smoothed_params.items():
+                        if k not in ("b1", "b2"):
+                            val = sp.get_value()
+                            if k == "ri":
+                                val = int(val)
+                            modulated[k] = val
+                    self.engine.set_params(**modulated)
+                elif self.mnca_lfo_system:
+                    # MNCA: Feed smoothed delta as LFO base
+                    if "delta" in self.smoothed_params:
+                        base_delta = self.smoothed_params["delta"].get_value()
+                        self.mnca_lfo_system.delta_lfo.base_value = base_delta
+                        self.mnca_lfo_system.delta_lfo.amplitude = base_delta * 0.30
+                    self.mnca_lfo_system.update(dt)
+                    modulated = self.mnca_lfo_system.get_modulated_params()
+                    # Apply non-delta smoothed params directly
+                    for k, sp in self.smoothed_params.items():
+                        if k != "delta":
+                            val = sp.get_value()
+                            if k in ("inner_r0", "outer_r0"):
+                                val = int(val)
+                            modulated[k] = val
+                    self.engine.set_params(**modulated)
                 elif self.smoothed_params:
                     # Other engines: apply smoothed values directly
                     smoothed_vals = {k: sp.get_value() for k, sp in self.smoothed_params.items()}
@@ -885,7 +1077,7 @@ class Viewer:
                 self.speed_accumulator += self.sim_speed
                 while self.speed_accumulator >= 1.0:
                     self.engine.step()
-                    if self.engine_name == "lenia":
+                    if self.engine_name in ("lenia", "smoothlife", "mnca"):
                         # Containment: decay edges to keep pattern centered
                         self.engine.world *= self._containment
                         # Center noise: tiny perturbations keep interior evolving
@@ -902,7 +1094,7 @@ class Viewer:
                     self.speed_accumulator -= 1.0
 
                 # Auto-reseed if organism dies (never go black)
-                if self.engine_name == "lenia":
+                if self.engine_name in ("lenia", "smoothlife", "mnca"):
                     mass = float(self.engine.world.mean())
                     if mass < 0.002:
                         preset = get_preset(self.preset_key)
@@ -913,6 +1105,10 @@ class Viewer:
                         self.iridescent.reset()
                         if self.lfo_system:
                             self.lfo_system.reset_phase()
+                        if self.sl_lfo_system:
+                            self.sl_lfo_system.reset_phase()
+                        if self.mnca_lfo_system:
+                            self.mnca_lfo_system.reset_phase()
 
             # Render canvas
             screen.fill(THEME["bg"])

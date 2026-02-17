@@ -51,23 +51,27 @@ except ImportError:
     _scipy_maximum = None
 
 
-def _dilate_world(world, thickness=5):
-    """Thicken structures via max-filter (morphological dilation).
+def _dilate_world(world, thickness=5.0):
+    """Thicken structures via max-filter + gaussian blur (smooth continuous control).
 
-    Unlike blur which smudges detail, dilation makes thin lines physically
-    wider while preserving their shape and edges.
-    Light blur applied after for softness.
+    Uses gaussian blur for the continuous part of thickness, with max-filter
+    kicking in for larger values. This gives smooth slider response at all levels.
     """
-    if _scipy_maximum is None or thickness < 2:
+    if thickness < 0.5:
         return world
     # Downsample for speed, dilate, upsample
     factor = 4
     small = world[::factor, ::factor].copy()
-    small_thick = max(2, thickness // factor)
-    dilated = _scipy_maximum(small, size=small_thick)
-    # Light blur for soft edges
+    sigma = max(0.5, thickness / factor)
+    # Max-filter for structural dilation at higher values
+    if _scipy_maximum is not None and thickness >= 4:
+        size = max(2, int(round(thickness / factor)))
+        dilated = _scipy_maximum(small, size=size)
+    else:
+        dilated = small
+    # Gaussian blur for soft, continuous thickness control
     if _scipy_gaussian is not None:
-        dilated = _scipy_gaussian(dilated, max(1.0, small_thick * 0.4))
+        dilated = _scipy_gaussian(dilated, sigma)
     # Bilinear upsample
     h, w = world.shape
     if _scipy_zoom is not None:
@@ -360,8 +364,12 @@ class Viewer:
         self.sim_speed = 1.0  # default: smooth continuous
         self.speed_accumulator = 0.0
 
-        # Render blur (Thickness slider): 0 = sharp, 30 = very soft/thick
-        self.render_blur_sigma = 0
+        # Coverage management state
+        self._prev_mass = 0.0
+        self._stagnant_frames = 0  # Counts consecutive low-change frames
+
+        # Velocity-driven perturbation: track previous world for motion detection
+        self._prev_world = None
 
         # Iridescent color pipeline
         self.iridescent = IridescentPipeline(sim_size)
@@ -389,6 +397,9 @@ class Viewer:
         self._cca_mask = self._build_cca_mask(sim_size)
         # MNCA containment: aggressive radial mask applied per-step
         self._mnca_containment = self._build_mnca_containment(sim_size)
+        # Rotating stir field: slow directional current that prevents center crystallization
+        self._stir_dx, self._stir_dy = self._build_stir_field(sim_size)
+        self._stir_phase = 0.0
 
         # Engine and preset state
         self.preset_key = start_preset
@@ -433,6 +444,26 @@ class Viewer:
         dist_sq = ((X - center) ** 2 + (Y - center) ** 2) / (center * center)
         # Gaussian with sigma ~0.3 of the radius
         return (0.008 * np.exp(-dist_sq / (2 * 0.18 ** 2))).astype(np.float64)
+
+    def _build_stir_field(self, size):
+        """Build directional stir components for rotating current.
+
+        Pre-computes dx and dy fields weighted by gaussian envelope.
+        At runtime, blend with cos/sin of rotating phase angle to create
+        a slow sweeping current that prevents center crystallization.
+        Cheap: just two multiply-adds per step, no array rotation.
+        """
+        center = size / 2.0
+        Y, X = np.ogrid[:size, :size]
+        dx = (X - center) / center  # -1 to 1
+        dy = (Y - center) / center
+        dist_sq = dx ** 2 + dy ** 2
+        # Gaussian envelope: strongest at center, fades by ~40% radius
+        envelope = np.exp(-dist_sq / (2 * 0.25 ** 2))
+        amp = 0.006  # Gentle: enough to destabilize rings, not visible as a shape
+        stir_dx = (dx * envelope * amp).astype(np.float64)
+        stir_dy = (dy * envelope * amp).astype(np.float64)
+        return stir_dx, stir_dy
 
     def _build_color_offset(self, size):
         """Noise-based spatial color offset for organic color pockets.
@@ -636,7 +667,7 @@ class Viewer:
             self.iridescent._hue_per_breath = 0.08
 
         # Thickness starts at 0 — user controls via slider
-        self.render_blur_sigma = 0
+        self.render_blur_sigma = 0.0
 
         # Create smoothed parameters for all engine sliders
         self.smoothed_params = {}
@@ -681,8 +712,6 @@ class Viewer:
             self.sliders["speed"].set_value(self.sim_speed)
         if "brush" in self.sliders:
             self.sliders["brush"].set_value(self.brush_radius)
-        if "thickness" in self.sliders:
-            self.sliders["thickness"].set_value(self.render_blur_sigma)
         # Hue slider
         if "hue" in self.sliders:
             self.sliders["hue"].set_value(getattr(self, '_hue_value', 0.25))
@@ -724,10 +753,6 @@ class Viewer:
         self.sliders["speed"] = panel.add_slider(
             "Speed", 0.95, 5.0, self.sim_speed, fmt=".2f",
             on_change=self._on_speed_change
-        )
-        self.sliders["thickness"] = panel.add_slider(
-            "Thickness", 0, 30, self.render_blur_sigma, fmt=".0f", step=1,
-            on_change=self._on_thickness_change
         )
         self.sliders["brush"] = panel.add_slider(
             "Brush", 3, 80, self.brush_radius, fmt=".0f", step=1,
@@ -812,10 +837,6 @@ class Viewer:
     def _on_speed_change(self, val):
         self.sim_speed = val
 
-    def _on_thickness_change(self, val):
-        """Update render blur sigma (Thickness slider)."""
-        self.render_blur_sigma = int(val)
-
     def _on_hue_change(self, val):
         """Update hue via cosine color wheel."""
         self._hue_value = val
@@ -893,7 +914,7 @@ class Viewer:
                 color_weights=(0.55, 0.20, 0.25),
                 t_offset=self._color_offset,
             )
-            rgb = self._apply_bloom(rgb, intensity=0.6)
+            rgb = self._apply_bloom(rgb, intensity=0.2)
         elif self.engine_name == "cca":
             # CCA: mask to circular region on black, heavy blur to remove pixelation
             world = self.engine.world * self._cca_mask
@@ -903,35 +924,15 @@ class Viewer:
                 color_weights=(0.35, 0.25, 0.40),
                 t_offset=self._color_offset,
             )
-            rgb = self._apply_bloom(rgb, intensity=0.4)
-        elif self.engine_name == "smoothlife":
-            world = self.engine.world
-            if self.render_blur_sigma > 0:
-                world = _dilate_world(world, thickness=self.render_blur_sigma)
-            rgb = self.iridescent.render(
-                world, dt, lfo_phase=lfo_phase,
-                t_offset=self._color_offset,
-            )
-            rgb = self._apply_bloom(rgb, intensity=0.4)
-        elif self.engine_name == "mnca":
-            world = self.engine.world
-            if self.render_blur_sigma > 0:
-                world = _dilate_world(world, thickness=self.render_blur_sigma)
-            rgb = self.iridescent.render(
-                world, dt, lfo_phase=lfo_phase,
-                t_offset=self._color_offset,
-            )
-            rgb = self._apply_bloom(rgb, intensity=0.4)
+            rgb = self._apply_bloom(rgb, intensity=0.15)
         else:
-            # Lenia + others
+            # SmoothLife, MNCA, Lenia, others — direct render
             world = self.engine.world
-            if self.render_blur_sigma > 0:
-                world = _dilate_world(world, thickness=self.render_blur_sigma)
             rgb = self.iridescent.render(
                 world, dt, lfo_phase=lfo_phase,
                 t_offset=self._color_offset,
             )
-            rgb = self._apply_bloom(rgb, intensity=0.4)
+            rgb = self._apply_bloom(rgb, intensity=0.15)
 
         surface = pygame.surfarray.make_surface(rgb.swapaxes(0, 1).copy())
         return surface
@@ -1145,59 +1146,109 @@ class Viewer:
                 while self.speed_accumulator >= 1.0:
                     self.engine.step()
                     if self.engine_name == "mnca":
-                        # MNCA: radial containment (keeps organism from wrapping)
                         self.engine.world *= self._mnca_containment
-                        # Center noise: tiny perturbations keep interior evolving
-                        noise = np.random.randn(self.sim_size, self.sim_size) * self._noise_mask
-                        self.engine.world = np.clip(self.engine.world + noise, 0.0, 1.0)
-                        # Periodic blob injection: keeps MNCA constantly reshaping
-                        if np.random.random() < 0.02:
-                            s = self.sim_size
-                            cx = s // 2 + np.random.randint(-s // 6, s // 6)
-                            cy = s // 2 + np.random.randint(-s // 6, s // 6)
-                            self.engine.add_blob(cx, cy, radius=max(8, s // 30), value=0.4)
                     elif self.engine_name in ("lenia", "smoothlife"):
-                        # Containment: gentle decay edges to keep pattern centered
                         self.engine.world *= self._containment
-                        # Center noise: perturbations keep interior evolving
-                        noise = np.random.randn(self.sim_size, self.sim_size) * self._noise_mask
-                        self.engine.world = np.clip(self.engine.world + noise, 0.0, 1.0)
-                        # Periodic churn: alternate add/erase to force center reshaping
-                        if np.random.random() < 0.03:
-                            s = self.sim_size
-                            cx = s // 2 + np.random.randint(-s // 5, s // 5)
-                            cy = s // 2 + np.random.randint(-s // 5, s // 5)
-                            r = max(8, s // 25)
-                            if np.random.random() < 0.5:
-                                self.engine.add_blob(cx, cy, radius=r, value=0.4)
-                            else:
-                                self.engine.remove_blob(cx, cy, radius=r)
                     elif self.engine_name == "gray_scott":
-                        # Periodic blob injection: seed small V patches near center
-                        # to keep the pattern constantly evolving (never fully static)
-                        if np.random.random() < 0.03:  # ~3% chance per step
-                            s = self.sim_size
-                            cx = s // 2 + np.random.randint(-s // 5, s // 5)
-                            cy = s // 2 + np.random.randint(-s // 5, s // 5)
-                            self.engine.add_blob(cx, cy, radius=s // 25, value=0.3)
+                        if np.random.random() < 0.03:
+                            noise = np.random.randn(
+                                self.sim_size, self.sim_size) * self._noise_mask * 5
+                            self.engine.world = np.clip(
+                                self.engine.world + noise, 0.0, 1.0)
+
+                    # Velocity-driven perturbation: still pixels MUST move
+                    # Self-regulating: static areas get noise, moving areas left alone
+                    if self.engine_name in ("lenia", "smoothlife", "mnca"):
+                        w = self.engine.world
+                        has_density = w > 0.03
+
+                        if self._prev_world is not None:
+                            velocity = np.abs(w - self._prev_world)
+                            # Where organism exists but isn't changing → perturb hard
+                            stagnant = has_density & (velocity < 0.003)
+                            if stagnant.any():
+                                # Lenia/MNCA need stronger kicks to break stable rings
+                                amp = 0.025 if self.engine_name in ("lenia", "mnca") else 0.012
+                                perturb = np.random.randn(
+                                    self.sim_size, self.sim_size) * amp * stagnant
+                                self.engine.world = np.clip(w + perturb, 0.0, 1.0)
+
+                        # Store snapshot for next step
+                        if self._prev_world is None:
+                            self._prev_world = w.copy()
+                        else:
+                            self._prev_world[:] = w
+
+                        # Center noise: ONLY where density exists (no grainy background)
+                        noise = np.random.randn(
+                            self.sim_size, self.sim_size) * self._noise_mask
+                        noise *= has_density
+                        self.engine.world = np.clip(
+                            self.engine.world + noise, 0.0, 1.0)
+
+                        # Rotating stir current: slow directional sweep prevents
+                        # center crystallization. Adds density ahead, removes behind.
+                        # ~30s for full rotation. Only where organism exists.
+                        self._stir_phase += 0.005
+                        stir = (np.cos(self._stir_phase) * self._stir_dx +
+                                np.sin(self._stir_phase) * self._stir_dy)
+                        stir *= has_density
+                        self.engine.world = np.clip(
+                            self.engine.world + stir, 0.0, 1.0)
+
                     self.speed_accumulator -= 1.0
 
-                # Auto-reseed if organism dies (never go black)
+                # Coverage management: keep organism alive and within bounds
                 if self.engine_name in ("lenia", "smoothlife", "mnca"):
                     mass = float(self.engine.world.mean())
+                    alive_frac = float((self.engine.world > 0.01).sum()) / self.engine.world.size
+
+                    # Auto-reseed if organism dies (never go black)
                     if mass < 0.002:
                         preset = get_preset(self.preset_key)
                         seed_kwargs = {}
                         if "density" in preset:
                             seed_kwargs["density"] = preset["density"]
                         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
-                        self.iridescent.reset()
+                        # Don't reset iridescent — prevents color flash
                         if self.lfo_system:
                             self.lfo_system.reset_phase()
                         if self.sl_lfo_system:
                             self.sl_lfo_system.reset_phase()
                         if self.mnca_lfo_system:
                             self.mnca_lfo_system.reset_phase()
+                        self._stagnant_frames = 0
+
+                    # Too sparse (< 25%): amplify center noise to trigger growth
+                    elif alive_frac < 0.25:
+                        boost = 4.0 if alive_frac > 0.15 else 8.0
+                        boost_noise = np.random.randn(
+                            self.sim_size, self.sim_size) * self._noise_mask * boost
+                        self.engine.world = np.clip(
+                            self.engine.world + boost_noise, 0.0, 1.0)
+
+                    # Too dense (> 85%): erode toward center
+                    elif alive_frac > 0.85:
+                        if self.engine_name == "mnca":
+                            self.engine.world *= self._mnca_containment
+                        else:
+                            self.engine.world *= self._containment
+                        self.engine.world *= 0.97
+
+                    # Stagnation detection: sustained low change over many frames
+                    delta_mass = abs(mass - self._prev_mass)
+                    self._prev_mass = mass
+                    if delta_mass < 0.0001:
+                        self._stagnant_frames += 1
+                    else:
+                        self._stagnant_frames = max(0, self._stagnant_frames - 2)
+
+                    # After ~2 seconds of stagnation, gently boost noise amplitude
+                    if self._stagnant_frames > 120 and 0.10 < alive_frac < 0.85:
+                        boost_noise = np.random.randn(
+                            self.sim_size, self.sim_size) * self._noise_mask * 5
+                        self.engine.world = np.clip(
+                            self.engine.world + boost_noise, 0.0, 1.0)
 
             # Render canvas
             screen.fill(THEME["bg"])

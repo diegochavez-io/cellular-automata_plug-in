@@ -23,10 +23,10 @@ PALETTES = {
         "d": np.array([0.00, 0.33, 0.67], dtype=np.float32),
     },
     "cuttlefish": {
-        "a": np.array([0.35, 0.50, 0.58], dtype=np.float32),
-        "b": np.array([0.36, 0.36, 0.30], dtype=np.float32),
-        "c": np.array([2.0, 2.4, 1.6], dtype=np.float32),
-        "d": np.array([0.0, 0.25, 0.5], dtype=np.float32),
+        "a": np.array([0.22, 0.25, 0.32], dtype=np.float32),   # Dark cool base (deep sea)
+        "b": np.array([0.18, 0.16, 0.20], dtype=np.float32),   # Subtle shimmer, not neon
+        "c": np.array([1.0, 1.2, 0.8], dtype=np.float32),      # Slow smooth gradients
+        "d": np.array([0.0, 0.20, 0.45], dtype=np.float32),    # Purple-teal-copper shift
     },
     "bioluminescent": {
         "a": np.array([0.25, 0.42, 0.50], dtype=np.float32),
@@ -42,8 +42,8 @@ PALETTES = {
     },
 }
 
-# Pre-compute alpha curve LUT (x^0.25 for 256 levels)
-_ALPHA_CURVE = np.sqrt(np.sqrt(np.linspace(0, 1, 256, dtype=np.float32)))
+# Pre-compute alpha curve LUT (x^0.5 — preserves density detail, not blown out)
+_ALPHA_CURVE = np.sqrt(np.linspace(0, 1, 256, dtype=np.float32))
 
 
 class IridescentPipeline:
@@ -88,8 +88,8 @@ class IridescentPipeline:
         self._vel_max_smooth = 0.01
         self._density_max_smooth = 0.01
 
-        # Current palette — oil_slick gives widest multi-hue range
-        self.palette_name = "oil_slick"
+        # Current palette — cuttlefish for natural vivid colors
+        self.palette_name = "cuttlefish"
         self.palette = PALETTES[self.palette_name]
 
     def set_palette(self, palette_name):
@@ -256,12 +256,12 @@ class IridescentPipeline:
         np.take(self._lut_2d, self._lut_indices.ravel(), axis=0,
                 out=self.display_buffer.reshape(-1, 3))
 
-        # 8. Bioluminescent edge specks — bright dots at high-gradient boundaries
+        # 8. Interior texture grain — only inside dense areas for organic feel
         speck_threshold = 0.55
-        speck_mask = (edges > speck_threshold) & (world > 0.005)
+        speck_mask = (edges > speck_threshold) & (world > 0.20)
         if speck_mask.any():
             speck_intensity = (
-                ((edges[speck_mask] - speck_threshold) / (1.0 - speck_threshold)) * 0.45
+                ((edges[speck_mask] - speck_threshold) / (1.0 - speck_threshold)) * 0.30
             )
             # Add specks in int16 to avoid uint8 overflow
             pixels = self.display_buffer[speck_mask].astype(np.int16)

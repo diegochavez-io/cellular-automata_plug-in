@@ -17,7 +17,7 @@ class CAEngine(ABC):
 
     def __init__(self, size=512):
         self.size = size
-        self.world = np.zeros((size, size), dtype=np.float64)
+        self.world = np.zeros((size, size), dtype=np.float32)
         self.generation = 0
 
     @abstractmethod

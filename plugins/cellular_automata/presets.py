@@ -16,7 +16,9 @@ PRESETS = {
         "description": "Gliding organism - a classic Lenia 'creature'",
         "R": 13, "T": 10, "mu": 0.15, "sigma": 0.017,
         "kernel_peaks": [0.5], "kernel_widths": [0.15],
-        "seed": "random",
+        "seed": "blobs", "density": 0.4,
+        "flow_swirl": 0.50, "flow_rotate": 0.35, "flow_vortex": 0.30,
+        "flow_bubble": 0.20, "flow_radial": -0.15,
     },
     "coral": {
         "engine": "lenia",
@@ -25,6 +27,8 @@ PRESETS = {
         "R": 20, "T": 15, "mu": 0.12, "sigma": 0.010,
         "kernel_peaks": [0.5], "kernel_widths": [0.18],
         "seed": "blobs",
+        "flow_rotate": 0.40, "flow_swirl": 0.35, "flow_vortex": 0.25,
+        "flow_radial": -0.10, "flow_bubble": 0.15,
     },
     "heartbeat": {
         "engine": "lenia",
@@ -33,6 +37,8 @@ PRESETS = {
         "R": 10, "T": 8, "mu": 0.22, "sigma": 0.035,
         "kernel_peaks": [0.5], "kernel_widths": [0.20],
         "seed": "ring",
+        "flow_swirl": 0.45, "flow_vortex": 0.40, "flow_bubble": 0.25,
+        "flow_rotate": 0.30, "flow_radial": -0.10,
     },
     "jellyfish": {
         "engine": "lenia",
@@ -42,6 +48,8 @@ PRESETS = {
         "kernel_peaks": [0.5], "kernel_widths": [0.22],
         "seed": "blobs", "density": 0.7,
         "palette": "bioluminescent",
+        "flow_bubble": 0.40, "flow_rotate": -0.30, "flow_vortex": 0.35,
+        "flow_swirl": 0.25, "flow_radial": -0.15,
     },
     "lava_lamp": {
         "engine": "lenia",
@@ -51,6 +59,8 @@ PRESETS = {
         "kernel_peaks": [0.4, 0.8], "kernel_widths": [0.18, 0.12],
         "seed": "blobs", "density": 0.6,
         "palette": "deep_coral",
+        "flow_rotate": 0.35, "flow_radial": -0.30, "flow_swirl": 0.30,
+        "flow_bubble": 0.25, "flow_vortex": 0.20,
     },
     "nebula": {
         "engine": "lenia",
@@ -60,15 +70,19 @@ PRESETS = {
         "kernel_peaks": [0.3, 0.6, 0.9], "kernel_widths": [0.15, 0.12, 0.10],
         "seed": "random", "density": 0.4,
         "palette": "oil_slick",
+        "flow_rotate": 0.35, "flow_swirl": 0.30, "flow_vortex": 0.25,
+        "flow_bubble": 0.15, "flow_radial": -0.10,
     },
     "tide_pool": {
         "engine": "lenia",
         "name": "Lenia Wave",
-        "description": "Sweeping wave-like patterns",
+        "description": "Sweeping wave-like patterns with complex interior",
         "R": 18, "T": 10, "mu": 0.20, "sigma": 0.032,
-        "kernel_peaks": [0.5], "kernel_widths": [0.20],
-        "seed": "ring",
+        "kernel_peaks": [0.3, 0.7], "kernel_widths": [0.18, 0.14],
+        "seed": "blobs", "density": 0.5,
         "palette": "cuttlefish",
+        "flow_swirl": 0.50, "flow_rotate": 0.35, "flow_vortex": 0.40,
+        "flow_radial": -0.20, "flow_ring": 0.15, "flow_bubble": 0.25,
     },
     "mycelium": {
         "engine": "lenia",
@@ -78,6 +92,8 @@ PRESETS = {
         "kernel_peaks": [0.5], "kernel_widths": [0.22],
         "seed": "blobs",
         "palette": "oil_slick",
+        "flow_rotate": 0.30, "flow_swirl": 0.25, "flow_vortex": 0.20,
+        "flow_radial": -0.10, "flow_bubble": 0.10,
     },
 
     # =====================================================================
@@ -155,6 +171,8 @@ PRESETS = {
         "b1": 0.278, "b2": 0.365, "d1": 0.267, "d2": 0.445,
         "alpha_n": 0.028, "alpha_m": 0.147, "dt": 0.12,
         "seed": "blobs",
+        "flow_swirl": 0.40, "flow_rotate": 0.30, "flow_vortex": 0.25,
+        "flow_bubble": 0.15, "flow_radial": -0.10,
     },
     "sl_worms": {
         "engine": "smoothlife",
@@ -165,6 +183,8 @@ PRESETS = {
         "alpha_n": 0.028, "alpha_m": 0.147, "dt": 0.10,
         "seed": "blobs",
         "palette": "deep_coral",
+        "flow_vertical": 0.20, "flow_swirl": 0.30, "flow_rotate": 0.25,
+        "flow_vortex": 0.20,
     },
     "sl_elastic": {
         "engine": "smoothlife",
@@ -175,6 +195,8 @@ PRESETS = {
         "alpha_n": 0.020, "alpha_m": 0.130, "dt": 0.12,
         "seed": "blobs",
         "palette": "bioluminescent",
+        "flow_rotate": 0.35, "flow_bubble": 0.25, "flow_vortex": 0.20,
+        "flow_swirl": 0.30,
     },
     "sl_pulse": {
         "engine": "smoothlife",
@@ -185,6 +207,8 @@ PRESETS = {
         "alpha_n": 0.035, "alpha_m": 0.140, "dt": 0.15,
         "seed": "random",
         "palette": "cuttlefish",
+        "flow_swirl": 0.35, "flow_rotate": -0.25, "flow_vortex": 0.30,
+        "flow_bubble": 0.20,
     },
     "sl_chaos": {
         "engine": "smoothlife",
@@ -195,6 +219,8 @@ PRESETS = {
         "alpha_n": 0.015, "alpha_m": 0.100, "dt": 0.12,
         "seed": "random",
         "palette": "oil_slick",
+        "flow_vortex": 0.40, "flow_swirl": 0.35, "flow_rotate": 0.25,
+        "flow_bubble": 0.15,
     },
 
     # =====================================================================
@@ -211,6 +237,8 @@ PRESETS = {
         ],
         "delta": 0.04,
         "seed": "random",
+        "flow_rotate": 0.35, "flow_swirl": 0.30, "flow_vortex": 0.25,
+        "flow_bubble": 0.15, "flow_radial": -0.10,
     },
     "mnca_mitosis": {
         "engine": "mnca",
@@ -225,6 +253,8 @@ PRESETS = {
         "delta": 0.035,
         "seed": "blobs",
         "palette": "bioluminescent",
+        "flow_bubble": 0.40, "flow_rotate": 0.30, "flow_swirl": 0.25,
+        "flow_vortex": 0.20, "flow_radial": -0.15,
     },
     "mnca_worm": {
         "engine": "mnca",
@@ -239,6 +269,8 @@ PRESETS = {
         "delta": 0.045,
         "seed": "blobs",
         "palette": "deep_coral",
+        "flow_rotate": 0.40, "flow_swirl": 0.30, "flow_vortex": 0.25,
+        "flow_bubble": 0.15, "flow_radial": -0.10,
     },
     "mnca_hunt": {
         "engine": "mnca",
@@ -252,6 +284,8 @@ PRESETS = {
         "delta": 0.05,
         "seed": "random",
         "palette": "cuttlefish",
+        "flow_vortex": 0.35, "flow_rotate": 0.30, "flow_swirl": 0.25,
+        "flow_bubble": 0.15, "flow_radial": -0.10,
     },
     "mnca_coral": {
         "engine": "mnca",
@@ -265,45 +299,52 @@ PRESETS = {
         "delta": 0.03,
         "seed": "random",
         "palette": "oil_slick",
+        "flow_rotate": 0.35, "flow_bubble": 0.25, "flow_swirl": 0.30,
+        "flow_vortex": 0.20, "flow_radial": -0.10,
     },
 
     # =====================================================================
-    # GRAY-SCOTT REACTION-DIFFUSION (kept in code, not shown in UI)
+    # GRAY-SCOTT REACTION-DIFFUSION (with flow field advection)
     # =====================================================================
     "reef": {
         "engine": "gray_scott",
-        "name": "GS Spots",
-        "description": "Holes and short tendrils in a contained blob",
+        "name": "GS Coral",
+        "description": "Slowly spinning spots that never settle",
         "feed": 0.037, "kill": 0.060, "Du": 0.21, "Dv": 0.105,
-        "seed": "center",
+        "seed": "dense",
+        "flow_rotate": 0.35, "flow_radial": 0.15,
     },
     "deep_sea": {
         "engine": "gray_scott",
-        "name": "GS Dense",
-        "description": "Dense holes with thick body, slow undulation",
+        "name": "GS Drift",
+        "description": "Ocean current drift with gentle swirl",
         "feed": 0.034, "kill": 0.063, "Du": 0.21, "Dv": 0.11,
-        "seed": "center",
+        "seed": "dense",
+        "flow_vertical": 0.45, "flow_swirl": 0.20,
     },
     "medusa": {
         "engine": "gray_scott",
-        "name": "GS Worms",
-        "description": "Sprawling long tendrils reaching outward",
+        "name": "GS Medusa",
+        "description": "Pulsing jellyfish expansion with slow counter-spin",
         "feed": 0.022, "kill": 0.056, "Du": 0.20, "Dv": 0.13,
-        "seed": "center",
+        "seed": "dense",
+        "flow_bubble": 0.50, "flow_rotate": -0.15,
     },
     "labyrinth": {
         "engine": "gray_scott",
-        "name": "GS Maze",
-        "description": "Maze-like winding patterns in a contained blob",
+        "name": "GS Labyrinth",
+        "description": "Spiraling mazes with concentric rings",
         "feed": 0.029, "kill": 0.057, "Du": 0.21, "Dv": 0.105,
-        "seed": "center",
+        "seed": "dense",
+        "flow_swirl": 0.60, "flow_ring": 0.25,
     },
     "tentacles": {
         "engine": "gray_scott",
-        "name": "GS Solitons",
-        "description": "Elongated soliton structures that crawl and branch",
+        "name": "GS Vortex",
+        "description": "Whirlpool solitons spiraling inward",
         "feed": 0.026, "kill": 0.059, "Du": 0.21, "Dv": 0.12,
-        "seed": "center",
+        "seed": "dense",
+        "flow_vortex": 0.40, "flow_radial": -0.12,
     },
 
     # =====================================================================
@@ -358,6 +399,8 @@ UNIFIED_ORDER = [
     "sl_gliders", "sl_worms", "sl_pulse",
     # MNCA
     "mnca_mitosis", "mnca_worm",
+    # Gray-Scott (flow advection)
+    "labyrinth", "tentacles", "medusa",
 ]
 
 # Legacy per-engine ordering (kept for compatibility)

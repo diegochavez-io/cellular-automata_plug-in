@@ -69,7 +69,7 @@ class Lenia(CAEngine):
         self._kernel_raw = K
 
         # Pad kernel to world size and pre-compute FFT for fast convolution
-        padded = np.zeros((self.size, self.size), dtype=np.float64)
+        padded = np.zeros((self.size, self.size), dtype=np.float32)
         kh, kw = K.shape
         padded[:kh, :kw] = K
         # Roll so kernel center is at (0,0) for circular convolution
@@ -140,6 +140,9 @@ class Lenia(CAEngine):
             self.seed_random(density=0.8, radius=self.size // 3)
         else:
             self.seed_random(**kwargs)
+        # Ensure float32 for fast FFT (seed methods may produce float64 via np.random)
+        if self.world.dtype != np.float32:
+            self.world = self.world.astype(np.float32)
 
     def seed_random(self, density=0.5, radius=None):
         """Seed a circular region with gaussian-falloff random values."""

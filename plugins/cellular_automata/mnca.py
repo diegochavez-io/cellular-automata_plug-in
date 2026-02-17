@@ -75,7 +75,7 @@ class MNCA(CAEngine):
 
             # Pad to world size and FFT
             kh, kw = kernel.shape
-            padded = np.zeros((size, size), dtype=np.float64)
+            padded = np.zeros((size, size), dtype=np.float32)
             padded[:kh, :kw] = kernel
             padded = np.roll(np.roll(padded, -kh // 2, axis=0), -kw // 2, axis=1)
             self._kernel_ffts.append(np.fft.rfft2(padded))
@@ -89,7 +89,7 @@ class MNCA(CAEngine):
         world_fft = np.fft.rfft2(self.world)
 
         # Accumulate delta from all rings
-        total_delta = np.zeros((self.size, self.size), dtype=np.float64)
+        total_delta = np.zeros((self.size, self.size), dtype=np.float32)
 
         for i, kfft in enumerate(self._kernel_ffts):
             # Compute neighborhood average for this ring
@@ -159,6 +159,9 @@ class MNCA(CAEngine):
             self.seed_sparse(**kwargs)
         else:
             self.seed_random(**kwargs)
+        # Ensure float32 for fast FFT (seed methods may produce float64 via np.random)
+        if self.world.dtype != np.float32:
+            self.world = self.world.astype(np.float32)
 
     def seed_random(self, density=0.5, radius=None):
         """Seed a circular region with gaussian-falloff random values."""

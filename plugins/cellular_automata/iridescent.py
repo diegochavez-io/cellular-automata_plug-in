@@ -17,33 +17,38 @@ import numpy as np
 
 PALETTES = {
     "oil_slick": {
-        "a": np.array([0.52, 0.52, 0.52], dtype=np.float32),
-        "b": np.array([0.45, 0.45, 0.45], dtype=np.float32),
+        # Full rainbow oil sheen — many color bands
+        "a": np.array([0.50, 0.50, 0.50], dtype=np.float32),
+        "b": np.array([0.50, 0.50, 0.50], dtype=np.float32),
         "c": np.array([2.0, 2.0, 2.0], dtype=np.float32),
         "d": np.array([0.00, 0.33, 0.67], dtype=np.float32),
     },
     "cuttlefish": {
-        "a": np.array([0.22, 0.25, 0.32], dtype=np.float32),   # Dark cool base (deep sea)
-        "b": np.array([0.18, 0.16, 0.20], dtype=np.float32),   # Subtle shimmer, not neon
-        "c": np.array([1.0, 1.2, 0.8], dtype=np.float32),      # Slow smooth gradients
-        "d": np.array([0.0, 0.20, 0.45], dtype=np.float32),    # Purple-teal-copper shift
+        # Vivid organic: cyan, green, yellow, orange, pink, magenta zones
+        # High a+b for full gamut, high c for multiple color cycles
+        "a": np.array([0.50, 0.50, 0.50], dtype=np.float32),
+        "b": np.array([0.50, 0.50, 0.50], dtype=np.float32),
+        "c": np.array([1.8, 1.2, 1.5], dtype=np.float32),      # Different rates = rich mixing
+        "d": np.array([0.00, 0.25, 0.55], dtype=np.float32),   # Cyan-green-orange-pink shift
     },
     "bioluminescent": {
-        "a": np.array([0.25, 0.42, 0.50], dtype=np.float32),
-        "b": np.array([0.45, 0.45, 0.36], dtype=np.float32),
-        "c": np.array([3.0, 2.0, 2.0], dtype=np.float32),
-        "d": np.array([0.15, 0.4, 0.6], dtype=np.float32),
+        # Deep ocean: teal, cyan, peach, coral — aquatic vivid
+        "a": np.array([0.45, 0.52, 0.55], dtype=np.float32),   # Teal-biased base
+        "b": np.array([0.50, 0.45, 0.42], dtype=np.float32),   # Wide warm range
+        "c": np.array([1.5, 1.0, 1.3], dtype=np.float32),
+        "d": np.array([0.08, 0.30, 0.55], dtype=np.float32),
     },
     "deep_coral": {
-        "a": np.array([0.42, 0.35, 0.50], dtype=np.float32),
-        "b": np.array([0.36, 0.42, 0.36], dtype=np.float32),
-        "c": np.array([1.6, 2.0, 2.4], dtype=np.float32),
-        "d": np.array([0.1, 0.35, 0.55], dtype=np.float32),
+        # Warm vivid: rose, amber, lime, magenta
+        "a": np.array([0.52, 0.45, 0.48], dtype=np.float32),
+        "b": np.array([0.48, 0.42, 0.45], dtype=np.float32),
+        "c": np.array([1.2, 1.8, 1.4], dtype=np.float32),      # Green channel cycles fastest
+        "d": np.array([0.00, 0.28, 0.55], dtype=np.float32),
     },
 }
 
-# Pre-compute alpha curve LUT (x^0.5 — preserves density detail, not blown out)
-_ALPHA_CURVE = np.sqrt(np.linspace(0, 1, 256, dtype=np.float32))
+# Pre-compute alpha curve LUT (x^0.6 — vivid colors visible at moderate density)
+_ALPHA_CURVE = np.power(np.linspace(0, 1, 256, dtype=np.float32), 0.6)
 
 
 class IridescentPipeline:
@@ -69,6 +74,7 @@ class IridescentPipeline:
         # Bakes in palette + alpha curve + tint + brightness + uint8 conversion
         # 256×256×3 = 192KB — fits in L2 cache
         self._lut_2d = np.zeros((256 * 256, 3), dtype=np.uint8)
+        self._lut_key = None  # Cache key for LUT rebuild
 
         # Hue state — locked to LFO breathing
         self.hue_phase = 0.0
@@ -105,7 +111,12 @@ class IridescentPipeline:
         """
         t_vals = np.linspace(0, 1, 256, dtype=np.float32)
         # Palette colors: (256, 3) float32
+        # Primary harmonic: broad color sweeps
         colors = a + b * np.cos(2.0 * np.pi * (c * t_vals[:, np.newaxis] + d))
+        # Second harmonic: fine-detail color depth (subtle overtone at 2.5x frequency)
+        colors += 0.06 * np.cos(2.0 * np.pi * (c * 2.5 * t_vals[:, np.newaxis] + d + 0.3))
+        # Third harmonic: micro-detail shimmer (very subtle at 4x frequency)
+        colors += 0.03 * np.cos(2.0 * np.pi * (c * 4.0 * t_vals[:, np.newaxis] + d + 0.7))
         np.clip(colors, 0, 1, out=colors)
 
         tint_bright = np.array(
@@ -165,7 +176,7 @@ class IridescentPipeline:
         return self.edge_buffer, self.vel_buffer
 
     def compute_color_parameter(self, world, edges, velocity,
-                                w_density=0.25, w_velocity=0.30, w_edges=0.45):
+                                w_density=0.40, w_velocity=0.30, w_edges=0.30):
         """Map simulation state to gradient parameter t in [0, 1]."""
         density_max = max(world.max(), 0.001)
         self._density_max_smooth = max(density_max, self._density_max_smooth * 0.995)
@@ -231,12 +242,18 @@ class IridescentPipeline:
         # 3. Advance hue locked to LFO breathing
         self._advance_hue_lfo(lfo_phase, dt)
 
-        # 4. Build combined 2D LUT with current hue + tint + brightness
+        # 4. Build combined 2D LUT (cached — only rebuild when params change)
         d_shifted = self.palette["d"] + self.hue_phase
-        self._build_lut_2d(
-            self.palette["a"], self.palette["b"],
-            self.palette["c"], d_shifted
-        )
+        lut_key = (round(float(d_shifted[0]), 3), round(float(d_shifted[1]), 3),
+                   round(float(d_shifted[2]), 3),
+                   round(self.tint_r, 2), round(self.tint_g, 2),
+                   round(self.tint_b, 2), round(self.brightness, 2))
+        if lut_key != self._lut_key:
+            self._build_lut_2d(
+                self.palette["a"], self.palette["b"],
+                self.palette["c"], d_shifted
+            )
+            self._lut_key = lut_key
 
         # 5. Quantize t to [0,255], pre-multiply by 256 for combined index
         np.multiply(t, 255.0, out=self.t_buffer)
@@ -255,24 +272,6 @@ class IridescentPipeline:
         self._lut_indices[:] = self.t_buffer
         np.take(self._lut_2d, self._lut_indices.ravel(), axis=0,
                 out=self.display_buffer.reshape(-1, 3))
-
-        # 8. Interior texture grain — only inside dense areas for organic feel
-        speck_threshold = 0.55
-        speck_mask = (edges > speck_threshold) & (world > 0.20)
-        if speck_mask.any():
-            speck_intensity = (
-                ((edges[speck_mask] - speck_threshold) / (1.0 - speck_threshold)) * 0.30
-            )
-            # Add specks in int16 to avoid uint8 overflow
-            pixels = self.display_buffer[speck_mask].astype(np.int16)
-            tint_scale = np.array(
-                [self.tint_r * self.brightness * 255.0,
-                 self.tint_g * self.brightness * 255.0,
-                 self.tint_b * self.brightness * 255.0], dtype=np.float32
-            )
-            pixels += (speck_intensity[:, np.newaxis] * tint_scale).astype(np.int16)
-            np.clip(pixels, 0, 255, out=pixels)
-            self.display_buffer[speck_mask] = pixels.astype(np.uint8)
 
         return self.display_buffer
 
@@ -303,3 +302,4 @@ class IridescentPipeline:
         self._density_max_smooth = 0.01
         self._prev_lfo_phase = None
         self._lfo_cycle_count = 0
+        self._lut_key = None  # Force LUT rebuild

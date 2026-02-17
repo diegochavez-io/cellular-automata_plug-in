@@ -14,7 +14,12 @@ Spatial containment via radial feed mask keeps patterns centered:
   - Edge ramp (40%->70%): feed increases to 5x (kills V, restores U=1)
   - Beyond 70%: 5x feed — hard boundary
 
-Reference: Pearson, "Complex Patterns in a Simple System" (1993)
+Flow field advection is handled externally by the viewer (universal
+across all engine types).
+
+References:
+  Pearson, "Complex Patterns in a Simple System" (1993)
+  Karl Sims, RD Tool (karlsims.com/rdtool.html)
 """
 
 import numpy as np
@@ -28,14 +33,6 @@ class GrayScott(CAEngine):
 
     def __init__(self, size=512, feed=0.055, kill=0.062,
                  Du=0.2097, Dv=0.105):
-        """
-        Args:
-            size: Grid dimension
-            feed: Feed rate F (how fast U is replenished)
-            kill: Kill rate k (how fast V is removed)
-            Du: Diffusion coefficient for U
-            Dv: Diffusion coefficient for V
-        """
         super().__init__(size)
         self.feed = feed
         self.kill = kill
@@ -107,13 +104,17 @@ class GrayScott(CAEngine):
         out -= field
 
     def step(self):
-        """Advance one time step (4 substeps for stability)."""
+        """Advance one time step (2 substeps).
+
+        Du=0.21, Dv=0.105 are 5x smaller than standard (1.0/0.5),
+        so 2 substeps (dt_eff=0.5) is stable: D*dt*4 = 0.42 < 0.5.
+        """
         fs = self._feed_spatial
         fk = self._fk
         Du = np.float32(self.Du)
         Dv = np.float32(self.Dv)
 
-        for _ in range(4):
+        for _ in range(2):
             self._laplacian(self.U, self._lap_U)
             self._laplacian(self.V, self._lap_V)
 
@@ -150,7 +151,7 @@ class GrayScott(CAEngine):
         self.U = np.clip(self.U - feedback * 0.25, 0.0, 1.0)
         self.world = self.V
 
-    def set_params(self, feed=None, kill=None, Du=None, Dv=None, **_kw):
+    def set_params(self, feed=None, kill=None, Du=None, Dv=None, **kwargs):
         rebuild = False
         if feed is not None:
             self.feed = feed
@@ -179,6 +180,8 @@ class GrayScott(CAEngine):
             self._seed_center()
         elif seed_type == "multi":
             self._seed_multi()
+        elif seed_type == "dense":
+            self._seed_dense()
         elif seed_type == "random":
             self._seed_scattered()
         else:
@@ -199,6 +202,32 @@ class GrayScott(CAEngine):
         # Add noise to break symmetry
         self.U += np.random.random((self.size, self.size)) * 0.02
         self.V += np.random.random((self.size, self.size)) * 0.01
+        np.clip(self.U, 0, 1, out=self.U)
+        np.clip(self.V, 0, 1, out=self.V)
+        self.world = self.V.copy()
+        self.generation = 0
+
+    def _seed_dense(self):
+        """Seed a dense noisy disk in the center.
+
+        Fills the center 35% radius with random V concentration, giving the
+        RD equations enough material to organize into patterns within ~300
+        steps instead of requiring 2000+ steps from small blobs.
+        """
+        self.U[:] = 1.0
+        self.V[:] = 0.0
+        center = self.size / 2.0
+        Y, X = np.ogrid[:self.size, :self.size]
+        dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
+
+        # Dense noisy disk with soft gaussian edge
+        disk = np.exp(-0.5 * (dist / 0.30) ** 4).astype(np.float32)
+        noise = np.random.random((self.size, self.size)).astype(np.float32)
+        self.V = disk * noise * 0.25
+        self.U = np.clip(1.0 - self.V * 2.0, 0.0, 1.0).astype(np.float32)
+        # Fine noise to break symmetry everywhere
+        self.U += np.random.random((self.size, self.size)).astype(np.float32) * 0.02
+        self.V += np.random.random((self.size, self.size)).astype(np.float32) * 0.005
         np.clip(self.U, 0, 1, out=self.U)
         np.clip(self.V, 0, 1, out=self.V)
         self.world = self.V.copy()

@@ -97,12 +97,12 @@ class SmoothLife(CAEngine):
         # Pad to world size and compute FFT
         kh, kw = M_kernel.shape
 
-        M_padded = np.zeros((size, size), dtype=np.float64)
+        M_padded = np.zeros((size, size), dtype=np.float32)
         M_padded[:kh, :kw] = M_kernel
         M_padded = np.roll(np.roll(M_padded, -kh // 2, axis=0), -kw // 2, axis=1)
         self._M_fft = np.fft.rfft2(M_padded)
 
-        N_padded = np.zeros((size, size), dtype=np.float64)
+        N_padded = np.zeros((size, size), dtype=np.float32)
         N_padded[:kh, :kw] = N_kernel
         N_padded = np.roll(np.roll(N_padded, -kh // 2, axis=0), -kw // 2, axis=1)
         self._N_fft = np.fft.rfft2(N_padded)
@@ -186,6 +186,9 @@ class SmoothLife(CAEngine):
             self.seed_ring(**kwargs)
         else:
             self.seed_random(**kwargs)
+        # Ensure float32 for fast FFT (seed methods may produce float64 via np.random)
+        if self.world.dtype != np.float32:
+            self.world = self.world.astype(np.float32)
 
     def seed_random(self, density=0.5, radius=None):
         """Seed a dense filled circle with near-binary values.

@@ -45,10 +45,28 @@ try:
     from scipy.ndimage import gaussian_filter as _scipy_gaussian
     from scipy.ndimage import zoom as _scipy_zoom
     from scipy.ndimage import maximum_filter as _scipy_maximum
+    from scipy.ndimage import map_coordinates as _map_coordinates
 except ImportError:
     _scipy_gaussian = None
     _scipy_zoom = None
     _scipy_maximum = None
+    _map_coordinates = None
+
+
+# Flow field type names (viewer-level, universal across all engines)
+FLOW_KEYS = ["flow_radial", "flow_rotate", "flow_swirl", "flow_bubble",
+             "flow_ring", "flow_vortex", "flow_vertical"]
+
+# Slider definitions for flow fields (used in panel for all engines)
+FLOW_SLIDER_DEFS = [
+    {"key": "flow_radial", "label": "Radial"},
+    {"key": "flow_rotate", "label": "Rotate"},
+    {"key": "flow_swirl", "label": "Swirl"},
+    {"key": "flow_bubble", "label": "Bubble"},
+    {"key": "flow_ring", "label": "Ring"},
+    {"key": "flow_vortex", "label": "Vortex"},
+    {"key": "flow_vertical", "label": "Vertical"},
+]
 
 
 def _dilate_world(world, thickness=5.0):
@@ -255,18 +273,18 @@ class LeniaLFOSystem:
 
 
 class GrayScottLFOSystem:
-    """Single LFO for Gray-Scott feed rate modulation.
+    """LFO system for Gray-Scott feed rate modulation.
 
-    Modulates feed by +/-0.006 around base value with ~30s period.
+    Feed LFO: modulates feed by +/-0.006 around base value with ~30s period.
     Makes holes expand/contract and tendrils wiggle — strong enough
     to push the pattern between regimes for visible structural change.
+
+    Flow field advection is handled by the viewer (universal across engines).
     """
 
     def __init__(self, preset):
         base_feed = preset.get("feed", 0.037)
         self.feed_lfo = SinusoidalLFO(base_feed, 0.006, frequency_hz=0.033)  # ~30s period
-
-        # Global speed multiplier (shared with Breath slider)
         self.lfo_speed = 1.0
 
     def update(self, dt):
@@ -370,6 +388,7 @@ class Viewer:
 
         # Velocity-driven perturbation: track previous world for motion detection
         self._prev_world = None
+        self._perturb_counter = 0  # Run perturbation every Nth step for performance
 
         # Iridescent color pipeline
         self.iridescent = IridescentPipeline(sim_size)
@@ -391,6 +410,9 @@ class Viewer:
         self._containment = self._build_containment(sim_size)
         # Center noise mask: gaussian blob for interior perturbation
         self._noise_mask = self._build_noise_mask(sim_size)
+        # Pre-computed full-res noise pool (no block artifacts, zero per-frame cost)
+        self._noise_pool = [np.random.randn(sim_size, sim_size).astype(np.float32) for _ in range(6)]
+        self._noise_idx = 0
         # Spatial color offset: radial + angular drives multi-color sweeps
         self._color_offset = self._build_color_offset(sim_size)
         # CCA render mask: soft circle to contain on black background
@@ -400,6 +422,18 @@ class Viewer:
         # Rotating stir field: slow directional current that prevents center crystallization
         self._stir_dx, self._stir_dy = self._build_stir_field(sim_size)
         self._stir_phase = 0.0
+
+        # Universal flow field system (all engines)
+        self._flow_fields = self._build_flow_fields(sim_size)
+        # Pre-allocate advection coordinate buffers
+        y_coords, x_coords = np.mgrid[:sim_size, :sim_size]
+        self._flow_base_y = y_coords.astype(np.float32)
+        self._flow_base_x = x_coords.astype(np.float32)
+        self._flow_adv_y = np.empty((sim_size, sim_size), dtype=np.float32)
+        self._flow_adv_x = np.empty((sim_size, sim_size), dtype=np.float32)
+        # Flow param values (viewer-level, shared across all engines)
+        for fk in FLOW_KEYS:
+            setattr(self, '_' + fk, 0.0)
 
         # Engine and preset state
         self.preset_key = start_preset
@@ -420,6 +454,27 @@ class Viewer:
     def total_w(self):
         return self.canvas_w + (PANEL_WIDTH if self.panel_visible else 0)
 
+    def _rebuild_sim_fields(self, new_size):
+        """Rebuild all sim-size-dependent masks, fields, and buffers."""
+        self.sim_size = new_size
+        self.res_scale = new_size / BASE_RES
+        self._containment = self._build_containment(new_size)
+        self._noise_mask = self._build_noise_mask(new_size)
+        self._noise_pool = [np.random.randn(new_size, new_size).astype(np.float32) for _ in range(6)]
+        self._noise_idx = 0
+        self._color_offset = self._build_color_offset(new_size)
+        self._cca_mask = self._build_cca_mask(new_size)
+        self._mnca_containment = self._build_mnca_containment(new_size)
+        self._stir_dx, self._stir_dy = self._build_stir_field(new_size)
+        self._flow_fields = self._build_flow_fields(new_size)
+        y_coords, x_coords = np.mgrid[:new_size, :new_size]
+        self._flow_base_y = y_coords.astype(np.float32)
+        self._flow_base_x = x_coords.astype(np.float32)
+        self._flow_adv_y = np.empty((new_size, new_size), dtype=np.float32)
+        self._flow_adv_x = np.empty((new_size, new_size), dtype=np.float32)
+        self.iridescent.reset(new_size)
+        self._prev_world = None
+
     def _build_containment(self, size):
         """Build a radial decay mask that keeps patterns centered.
 
@@ -429,9 +484,9 @@ class Viewer:
         center = size / 2.0
         Y, X = np.ogrid[:size, :size]
         dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
-        # Fade starts at 25% from center, aggressive decay kills edges
-        fade = np.clip((dist - 0.25) / 0.25, 0.0, 1.0)
-        return (1.0 - fade * 0.06).astype(np.float64)
+        # Gentle fade: starts at 40% from center, gradual over 30%
+        fade = np.clip((dist - 0.40) / 0.30, 0.0, 1.0)
+        return (1.0 - fade * 0.04).astype(np.float32)
 
     def _build_noise_mask(self, size):
         """Gaussian mask for center noise injection.
@@ -443,7 +498,7 @@ class Viewer:
         Y, X = np.ogrid[:size, :size]
         dist_sq = ((X - center) ** 2 + (Y - center) ** 2) / (center * center)
         # Gaussian with sigma ~0.3 of the radius
-        return (0.008 * np.exp(-dist_sq / (2 * 0.18 ** 2))).astype(np.float64)
+        return (0.003 * np.exp(-dist_sq / (2 * 0.18 ** 2))).astype(np.float32)
 
     def _build_stir_field(self, size):
         """Build directional stir components for rotating current.
@@ -460,9 +515,9 @@ class Viewer:
         dist_sq = dx ** 2 + dy ** 2
         # Gaussian envelope: strongest at center, fades by ~40% radius
         envelope = np.exp(-dist_sq / (2 * 0.25 ** 2))
-        amp = 0.006  # Gentle: enough to destabilize rings, not visible as a shape
-        stir_dx = (dx * envelope * amp).astype(np.float64)
-        stir_dy = (dy * envelope * amp).astype(np.float64)
+        amp = 0.010  # Enough to push center structures around, no grain
+        stir_dx = (dx * envelope * amp).astype(np.float32)
+        stir_dy = (dy * envelope * amp).astype(np.float32)
         return stir_dx, stir_dy
 
     def _build_color_offset(self, size):
@@ -476,11 +531,10 @@ class Viewer:
         Y, X = np.ogrid[:size, :size]
         dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
 
-        # Subtle radial: 0.0 at center -> 0.25 at edges
-        radial = np.clip(dist, 0, 1) * 0.25
+        # Radial gradient: 0.0 at center -> 0.35 at edges (broad color shift)
+        radial = np.clip(dist, 0, 1) * 0.35
 
-        # Low-frequency noise blobs for color pockets
-        # Generate small noise, upsample for large organic blobs
+        # Low-frequency noise blobs for large organic color zones
         noise_size = max(8, size // 64)
         noise_small = np.random.randn(noise_size, noise_size).astype(np.float32)
         if _scipy_gaussian is not None:
@@ -490,9 +544,9 @@ class Viewer:
         else:
             factor = size // noise_size
             noise = np.repeat(np.repeat(noise_small, factor, axis=0), factor, axis=1)[:size, :size]
-        # Normalize to [-0.3, 0.3] range for color pocket variation
+        # Normalize to [-0.5, 0.5] range — wide enough for distinct color zones
         noise_range = max(noise.max() - noise.min(), 0.001)
-        noise = (noise - noise.min()) / noise_range * 0.6 - 0.3
+        noise = (noise - noise.min()) / noise_range * 1.0 - 0.5
 
         return (radial + noise).astype(np.float32)
 
@@ -524,7 +578,131 @@ class Viewer:
         mask = np.exp(-0.5 * (dist / 0.50) ** 2)
         # Gentle zero toward borders (no hard cliff)
         mask[dist > 0.75] *= np.clip(1.0 - (dist[dist > 0.75] - 0.75) / 0.15, 0.0, 1.0)
-        return mask.astype(np.float64)
+        return mask.astype(np.float32)
+
+    def _build_flow_fields(self, size):
+        """Pre-compute 7 velocity fields as (vx, vy) float32 pairs.
+
+        Each field is normalized so max magnitude ~1.0.
+        Only depends on grid geometry — computed once at init.
+        """
+        center = size / 2.0
+        Y, X = np.ogrid[:size, :size]
+        dx = (X - center) / center  # [-1, 1]
+        dy = (Y - center) / center
+        dist = np.sqrt(dx ** 2 + dy ** 2)
+        dist_safe = np.maximum(dist, 1e-6)
+
+        # Unit radial vector
+        rx = dx / dist_safe
+        ry = dy / dist_safe
+
+        # Perpendicular (tangent) vector
+        tx = -ry
+        ty = rx
+
+        fields = {}
+
+        # 1. Radial: push out from center
+        fields["flow_radial"] = (rx.astype(np.float32), ry.astype(np.float32))
+
+        # 2. Rotate: perpendicular to radial, weighted by distance
+        rot_weight = np.clip(dist, 0, 1)
+        fields["flow_rotate"] = (
+            (tx * rot_weight).astype(np.float32),
+            (ty * rot_weight).astype(np.float32),
+        )
+
+        # 3. Swirl: blend rotate (near center) + radial (at edges)
+        swirl_blend = np.clip(dist, 0, 1)
+        swirl_vx = tx * (1 - swirl_blend * 0.5) + rx * swirl_blend * 0.5
+        swirl_vy = ty * (1 - swirl_blend * 0.5) + ry * swirl_blend * 0.5
+        swirl_mag = np.sqrt(swirl_vx ** 2 + swirl_vy ** 2)
+        swirl_mag_safe = np.maximum(swirl_mag, 1e-6)
+        fields["flow_swirl"] = (
+            (swirl_vx / swirl_mag_safe * dist).astype(np.float32),
+            (swirl_vy / swirl_mag_safe * dist).astype(np.float32),
+        )
+
+        # 4. Bubble: radial weighted by gaussian (sigma=0.3)
+        bubble_weight = np.exp(-dist ** 2 / (2 * 0.3 ** 2))
+        fields["flow_bubble"] = (
+            (rx * bubble_weight).astype(np.float32),
+            (ry * bubble_weight).astype(np.float32),
+        )
+
+        # 5. Ring: radial * sin(dist * 6pi) — concentric push/pull
+        ring_mod = np.sin(dist * 6.0 * np.pi)
+        fields["flow_ring"] = (
+            (rx * ring_mod).astype(np.float32),
+            (ry * ring_mod).astype(np.float32),
+        )
+
+        # 6. Vortex: perpendicular, dist^2 weighted (accelerating spin)
+        vortex_weight = np.clip(dist, 0, 1) ** 2
+        fields["flow_vortex"] = (
+            (tx * vortex_weight).astype(np.float32),
+            (ty * vortex_weight).astype(np.float32),
+        )
+
+        # 7. Vertical: uniform downward drift
+        fields["flow_vertical"] = (
+            np.zeros((size, size), dtype=np.float32),
+            np.ones((size, size), dtype=np.float32),
+        )
+
+        return fields
+
+    def _advect(self, field):
+        """Semi-Lagrangian advection using viewer-level flow fields.
+
+        Combines active flow fields into total displacement, traces
+        backward, and bilinear interpolates. Returns field unchanged
+        if no flow is active or scipy is unavailable.
+
+        Max displacement: 0.3px per step (~1.5px/second at 5 FPS).
+        """
+        if _map_coordinates is None:
+            return field
+
+        total_vx = None
+        total_vy = None
+        has_flow = False
+
+        for fkey in FLOW_KEYS:
+            strength = getattr(self, '_' + fkey)
+            if abs(strength) < 0.001:
+                continue
+            vx, vy = self._flow_fields[fkey]
+            if total_vx is None:
+                total_vx = vx * strength
+                total_vy = vy * strength
+            else:
+                total_vx = total_vx + vx * strength
+                total_vy = total_vy + vy * strength
+            has_flow = True
+
+        if not has_flow:
+            return field
+
+        # Scale: 0.8px max displacement per step (enough for constant visible motion)
+        total_vx = total_vx * 0.8
+        total_vy = total_vy * 0.8
+
+        # Backward trace: source = current_pos - velocity
+        np.subtract(self._flow_base_y, total_vy, out=self._flow_adv_y)
+        np.subtract(self._flow_base_x, total_vx, out=self._flow_adv_x)
+
+        # Bilinear interpolation with wrapping
+        return _map_coordinates(
+            field, [self._flow_adv_y, self._flow_adv_x],
+            order=1, mode='wrap'
+        ).astype(np.float32)
+
+    def _fast_noise(self):
+        """Return full-res noise from pre-computed pool. Zero generation cost."""
+        self._noise_idx = (self._noise_idx + 1) % len(self._noise_pool)
+        return self._noise_pool[self._noise_idx]
 
     def _scale_R(self, base_R):
         """Scale kernel radius for current sim resolution (Lenia only)."""
@@ -611,16 +789,27 @@ class Viewer:
         new_engine_name = preset["engine"]
         engine_changed = new_engine_name != self.engine_name
 
+        # GS runs at 512 for CPU performance (4x faster step + advection).
+        # Others run at 1024 for visual quality.
+        target_sim = 512 if new_engine_name == "gray_scott" else 1024
+        if target_sim != self.sim_size:
+            self._rebuild_sim_fields(target_sim)
+
         self.preset_key = key
 
         self.engine_name = new_engine_name
 
+        # Extract flow params from preset (viewer-level, not engine-level)
+        for fk in FLOW_KEYS:
+            setattr(self, '_' + fk, preset.get(fk, 0.0))
+
         if engine_changed or self.engine is None:
             self.engine = self._create_engine(new_engine_name, preset)
         else:
-            # Same engine type - just update params
+            # Same engine type - just update params (filter out flow keys)
             params = {k: v for k, v in preset.items()
-                      if k not in ("engine", "name", "description", "seed", "density", "palette")}
+                      if k not in ("engine", "name", "description", "seed", "density", "palette")
+                      and k not in FLOW_KEYS}
             if new_engine_name == "lenia" and "R" in params:
                 params["R"] = self._scale_R(params["R"])
             if new_engine_name == "smoothlife":
@@ -640,6 +829,12 @@ class Viewer:
         if "density" in preset:
             seed_kwargs["density"] = preset["density"]
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
+
+        # GS warmup: pre-run steps so the user sees developed structure
+        # immediately. At 512x512 with 2 substeps, 1000 gens takes ~3s.
+        if new_engine_name == "gray_scott":
+            for _ in range(1000):
+                self.engine.step()
 
         # Reset iridescent pipeline and speed
         self.iridescent.reset(self.sim_size)
@@ -666,15 +861,14 @@ class Viewer:
         else:
             self.iridescent._hue_per_breath = 0.08
 
-        # Thickness starts at 0 — user controls via slider
-        self.render_blur_sigma = 0.0
+        # Thickness: dilation amount for structure lines (0 = raw, higher = thicker)
+        self.render_thickness = 0.0
 
         # Create smoothed parameters for all engine sliders
         self.smoothed_params = {}
         for sdef in self.engine.__class__.get_slider_defs():
             param_key = sdef["key"]
             params = self.engine.get_params()
-            # Vary time constants for organic independence
             tau = {"mu": 2.0, "sigma": 2.2, "T": 2.5, "R": 2.5}.get(param_key, 2.0)
             sp = SmoothedParameter(params.get(param_key, sdef["default"]), time_constant=tau)
             self.smoothed_params[param_key] = sp
@@ -710,6 +904,8 @@ class Viewer:
         # Common sliders
         if "speed" in self.sliders:
             self.sliders["speed"].set_value(self.sim_speed)
+        if "thickness" in self.sliders:
+            self.sliders["thickness"].set_value(self.render_thickness)
         if "brush" in self.sliders:
             self.sliders["brush"].set_value(self.brush_radius)
         # Hue slider
@@ -724,6 +920,10 @@ class Viewer:
             self.sliders["tint_b"].set_value(self.iridescent.tint_b)
         if "brightness" in self.sliders:
             self.sliders["brightness"].set_value(self.iridescent.brightness)
+        # Flow sliders (viewer-level)
+        for fk in FLOW_KEYS:
+            if fk in self.sliders:
+                self.sliders[fk].set_value(getattr(self, '_' + fk))
 
     def _build_panel(self):
         """Build the OP-1 style control panel with unified presets."""
@@ -754,12 +954,16 @@ class Viewer:
             "Speed", 0.95, 5.0, self.sim_speed, fmt=".2f",
             on_change=self._on_speed_change
         )
+        self.sliders["thickness"] = panel.add_slider(
+            "Thickness", 0.0, 20.0, self.render_thickness, fmt=".1f",
+            on_change=lambda v: setattr(self, 'render_thickness', v)
+        )
         self.sliders["brush"] = panel.add_slider(
             "Brush", 3, 80, self.brush_radius, fmt=".0f", step=1,
             on_change=lambda v: setattr(self, 'brush_radius', int(v))
         )
 
-        # --- Engine-specific shape params (in main controls) ---
+        # --- Engine-specific params (SHAPE section) ---
         engine_sliders = self.engine.__class__.get_slider_defs()
         if engine_sliders:
             panel.add_section("SHAPE")
@@ -770,6 +974,17 @@ class Viewer:
                     step=sdef.get("step"),
                     on_change=self._make_param_callback(sdef["key"])
                 )
+
+        # --- Universal flow sliders (all engines) ---
+        has_any_flow = any(abs(getattr(self, '_' + fk)) > 0.001 for fk in FLOW_KEYS)
+        flow_section = panel.add_collapsible_section("FLOW", expanded=has_any_flow)
+        for fdef in FLOW_SLIDER_DEFS:
+            self.sliders[fdef["key"]] = panel.add_slider_to(
+                flow_section,
+                fdef["label"], -1.0, 1.0, getattr(self, '_' + fdef["key"]),
+                fmt=".2f",
+                on_change=self._make_flow_callback(fdef["key"])
+            )
 
         # --- Actions ---
         panel.add_spacer(4)
@@ -830,6 +1045,12 @@ class Viewer:
                     self.engine.set_params(**{key: val})
         return callback
 
+    def _make_flow_callback(self, key):
+        """Create a callback that updates a viewer-level flow parameter."""
+        def callback(val):
+            setattr(self, '_' + key, val)
+        return callback
+
     def _on_preset_select(self, idx, name):
         if idx < len(UNIFIED_ORDER):
             self._apply_preset(UNIFIED_ORDER[idx])
@@ -844,9 +1065,10 @@ class Viewer:
 
     def _on_reset(self):
         preset = get_preset(self.preset_key)
-        # Re-apply preset params to ensure clean state
+        # Re-apply preset params to ensure clean state (filter out flow keys)
         params = {k: v for k, v in preset.items()
-                  if k not in ("engine", "name", "description", "seed", "density", "palette")}
+                  if k not in ("engine", "name", "description", "seed", "density", "palette")
+                  and k not in FLOW_KEYS}
         if self.engine_name == "lenia" and "R" in params:
             params["R"] = self._scale_R(params["R"])
         if self.engine_name == "smoothlife":
@@ -860,6 +1082,9 @@ class Viewer:
                 for ir, orr in params["rings"]
             ]
         self.engine.set_params(**params)
+        # Reset flow params from preset
+        for fk in FLOW_KEYS:
+            setattr(self, '_' + fk, preset.get(fk, 0.0))
         # Snap smoothed params to current values (immediate reset, no smoothing)
         for key, sp in self.smoothed_params.items():
             current_params = self.engine.get_params()
@@ -870,6 +1095,10 @@ class Viewer:
         if "density" in preset:
             seed_kwargs["density"] = preset["density"]
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
+        # GS warmup on reseed too
+        if self.engine_name == "gray_scott":
+            for _ in range(200):
+                self.engine.step()
         self.iridescent.reset()
         self.speed_accumulator = 0.0
         # Reset LFO phase (explicit user reseed) and reload base values from preset
@@ -893,6 +1122,92 @@ class Viewer:
         self.speed_accumulator = 0.0
 
 
+    def _render_gs_emboss(self, dt):
+        """Render Gray-Scott with heightfield emboss lighting + periodic colormap.
+
+        Karl Sims' approach: treat V concentration as a heightfield, compute
+        surface normals from gradients, apply Phong lighting for 3D appearance.
+        Periodic colormap reveals internal structure through color banding.
+        No blur — GS patterns have naturally sharp, detailed boundaries.
+        """
+        V = self.engine.V
+
+        # Contrast stretch: GS V values typically range 0-0.35.
+        # Map to full [0,1] for colormap, keeping raw V for gradients.
+        V_stretch = np.clip(V * 4.0, 0.0, 1.0)
+
+        # Gradients via central differences on raw V (wrap edges)
+        dVdx = np.empty_like(V)
+        dVdy = np.empty_like(V)
+        dVdx[:, 1:-1] = (V[:, 2:] - V[:, :-2]) * 0.5
+        dVdx[:, 0] = (V[:, 1] - V[:, -1]) * 0.5
+        dVdx[:, -1] = (V[:, 0] - V[:, -2]) * 0.5
+        dVdy[1:-1, :] = (V[2:, :] - V[:-2, :]) * 0.5
+        dVdy[0, :] = (V[1, :] - V[-1, :]) * 0.5
+        dVdy[-1, :] = (V[0, :] - V[-2, :]) * 0.5
+
+        # Heightfield normals: N = normalize(dVdx * h, dVdy * h, -1)
+        height_scale = np.float32(12.0)
+        nx = dVdx * height_scale
+        ny = dVdy * height_scale
+        nz_val = np.float32(-1.0)
+        nmag = np.sqrt(nx * nx + ny * ny + nz_val * nz_val)
+        nmag = np.maximum(nmag, np.float32(1e-6))
+        inv_nmag = np.float32(1.0) / nmag
+        nx *= inv_nmag
+        ny *= inv_nmag
+        nz = nz_val * inv_nmag
+
+        # Light from upper-left
+        lx, ly, lz = -0.5, -0.5, 1.0
+        lmag = math.sqrt(lx * lx + ly * ly + lz * lz)
+        lx /= lmag; ly /= lmag; lz /= lmag
+
+        # Diffuse lighting
+        diffuse = np.clip(nx * lx + ny * ly + nz * lz, 0.0, 1.0)
+
+        # Specular (Blinn-Phong, view direction = (0, 0, -1))
+        hx, hy, hz = lx, ly, lz - 1.0
+        hmag = math.sqrt(hx * hx + hy * hy + hz * hz)
+        hx /= hmag; hy /= hmag; hz /= hmag
+        spec = np.clip(nx * hx + ny * hy + nz * hz, 0.0, 1.0)
+        np.power(spec, 32, out=spec)
+
+        # Periodic colormap on contrast-stretched V
+        # Frequency > 1 creates contour-like color bands
+        frequency = np.float32(2.5)
+        phase = np.float32(self._hue_value * 2.0 * math.pi)
+        t = V_stretch * frequency
+
+        # Cosine palette: warm organic tones with hue rotation
+        two_pi = np.float32(2.0 * math.pi)
+        rgb = np.empty((*V.shape, 3), dtype=np.float32)
+        # RGB offsets create warm-to-cool color progression
+        d_offsets = (0.00, 0.33, 0.67)
+        for i in range(3):
+            rgb[:, :, i] = 0.5 + 0.5 * np.cos(two_pi * t + phase + d_offsets[i] * two_pi)
+
+        # Combine: (ambient + diffuse) * color + specular
+        lighting = (np.float32(0.15) + diffuse * np.float32(0.85))
+        result = lighting[:, :, np.newaxis] * rgb
+
+        # Warm specular highlights
+        spec_contrib = spec * np.float32(0.35)
+        result[:, :, 0] += spec_contrib
+        result[:, :, 1] += spec_contrib * 0.92
+        result[:, :, 2] += spec_contrib * 0.85
+
+        # Black background where V is negligible
+        alive_mask = (V > 0.005).astype(np.float32)
+        result *= alive_mask[:, :, np.newaxis]
+
+        # Apply brightness control
+        result *= self.iridescent.brightness
+
+        np.clip(result, 0.0, 1.0, out=result)
+        result *= 255.0
+        return result.astype(np.uint8)
+
     def _render_frame(self, dt):
         """Render using iridescent cosine palette pipeline."""
         lfo_phase = None
@@ -906,28 +1221,45 @@ class Viewer:
             lfo_phase = self.mnca_lfo_system.delta_lfo.phase
 
         if self.engine_name == "gray_scott":
-            # Soft rendering: blur world for organic blobby look,
-            # density-driven color weights, spatial offset for multi-color sweeps
-            world = _blur_world(self.engine.world, sigma=15)
-            rgb = self.iridescent.render(
-                world, dt, lfo_phase=lfo_phase,
-                color_weights=(0.55, 0.20, 0.25),
-                t_offset=self._color_offset,
-            )
-            rgb = self._apply_bloom(rgb, intensity=0.2)
+            # GS V values typically range 0-0.35. Contrast stretch to full [0, 1]
+            # so the iridescent pipeline sees clear structure with full dynamic range.
+            world = np.clip(self.engine.world * 3.0, 0.0, 1.0)
         elif self.engine_name == "cca":
             # CCA: mask to circular region on black, heavy blur to remove pixelation
             world = self.engine.world * self._cca_mask
             world = _blur_world(world, sigma=28)
+        elif self.engine_name == "smoothlife":
+            # SmoothLife: contrast curve to prevent blown-out look
+            # SL fields have wide high-value regions; power curve compresses mid-tones
+            world = np.power(self.engine.world, 1.8)
+        else:
+            # MNCA, Lenia, others — direct render
+            world = self.engine.world
+
+        # Thickness: dilate structures (user slider, 0 = raw)
+        if self.render_thickness > 0.5:
+            world = _dilate_world(world, self.render_thickness)
+
+        # Render through iridescent pipeline
+        if self.engine_name == "cca":
             rgb = self.iridescent.render(
                 world, dt, lfo_phase=lfo_phase,
                 color_weights=(0.35, 0.25, 0.40),
                 t_offset=self._color_offset,
             )
             rgb = self._apply_bloom(rgb, intensity=0.15)
+        elif self.engine_name == "gray_scott":
+            rgb = self.iridescent.render(
+                world, dt, lfo_phase=lfo_phase,
+                t_offset=self._color_offset,
+            )
+        elif self.engine_name == "smoothlife":
+            rgb = self.iridescent.render(
+                world, dt, lfo_phase=lfo_phase,
+                t_offset=self._color_offset,
+            )
+            rgb = self._apply_bloom(rgb, intensity=0.10)
         else:
-            # SmoothLife, MNCA, Lenia, others — direct render
-            world = self.engine.world
             rgb = self.iridescent.render(
                 world, dt, lfo_phase=lfo_phase,
                 t_offset=self._color_offset,
@@ -940,8 +1272,8 @@ class Viewer:
     def _apply_bloom(self, rgb, sigma=25, intensity=0.5):
         """Colored glow halo via 8x downsample-blur-upsample additive blend.
 
-        128x128x3 blur is fast (~5ms). The heavy downsample is fine for
-        bloom since the glow is very diffuse by nature.
+        Optimized: scale + convert to uint8 at small res BEFORE upsample,
+        then saturating add via uint16. Uses ~4x less memory than float32 path.
         """
         h, w = rgb.shape[:2]
         factor = 8
@@ -970,11 +1302,18 @@ class Viewer:
                     ch = (cs[k:, :] - cs[:-k, :]) / k
                 glow[:, :, c] = ch
 
-        glow = np.repeat(np.repeat(glow, factor, axis=0), factor, axis=1)[:h, :w, :]
+        # Scale intensity at small res (128×128), convert to uint8 before upsample
+        np.multiply(glow, intensity, out=glow)
+        np.clip(glow, 0, 255, out=glow)
+        glow_u8 = glow.astype(np.uint8)
 
-        result = rgb.astype(np.float32) + glow * intensity
-        np.clip(result, 0, 255, out=result)
-        return result.astype(np.uint8)
+        # Upsample at uint8 (3x less memory than float32 repeat)
+        glow_up = np.repeat(np.repeat(glow_u8, factor, axis=0), factor, axis=1)[:h, :w, :]
+
+        # Saturating add via uint16 (avoids full float32 intermediate)
+        return np.minimum(
+            rgb.astype(np.uint16) + glow_up, 255
+        ).astype(np.uint8)
 
     def _draw_hud(self, screen, fps):
         if not self.show_hud:
@@ -1095,7 +1434,7 @@ class Viewer:
                         self.gs_lfo_system.feed_lfo.base_value = self.smoothed_params["feed"].get_value()
                     self.gs_lfo_system.update(dt)
                     modulated = self.gs_lfo_system.get_modulated_params()
-                    # Apply non-feed smoothed params directly
+                    # Apply non-LFO smoothed params directly
                     for k, sp in self.smoothed_params.items():
                         if k != "feed":
                             modulated[k] = sp.get_value()
@@ -1145,50 +1484,55 @@ class Viewer:
                 self.speed_accumulator += self.sim_speed
                 while self.speed_accumulator >= 1.0:
                     self.engine.step()
+
+                    # Universal flow advection (after step, before containment)
+                    if self.engine_name == "gray_scott":
+                        self.engine.U = self._advect(self.engine.U)
+                        self.engine.V = self._advect(self.engine.V)
+                        np.clip(self.engine.U, 0.0, 1.0, out=self.engine.U)
+                        np.clip(self.engine.V, 0.0, 1.0, out=self.engine.V)
+                        self.engine.world = self.engine.V
+                    elif self.engine_name in ("lenia", "smoothlife", "mnca"):
+                        self.engine.world = self._advect(self.engine.world)
+
                     if self.engine_name == "mnca":
                         self.engine.world *= self._mnca_containment
                     elif self.engine_name in ("lenia", "smoothlife"):
                         self.engine.world *= self._containment
-                    elif self.engine_name == "gray_scott":
-                        if np.random.random() < 0.03:
-                            noise = np.random.randn(
-                                self.sim_size, self.sim_size) * self._noise_mask * 5
-                            self.engine.world = np.clip(
-                                self.engine.world + noise, 0.0, 1.0)
+                    # Gray-Scott uses its own radial feed mask for containment (don't double-contain)
 
-                    # Velocity-driven perturbation: still pixels MUST move
-                    # Self-regulating: static areas get noise, moving areas left alone
+                    # Perturbation + noise + stir: keep organism alive and moving
+                    # GS excluded — its feed/kill dynamics + LFO + flow handle movement
                     if self.engine_name in ("lenia", "smoothlife", "mnca"):
                         w = self.engine.world
                         has_density = w > 0.03
+                        self._perturb_counter += 1
 
-                        if self._prev_world is not None:
+                        # Velocity perturbation: every 4th step (noise gen is expensive)
+                        if self._perturb_counter % 4 == 0 and self._prev_world is not None:
                             velocity = np.abs(w - self._prev_world)
-                            # Where organism exists but isn't changing → perturb hard
                             stagnant = has_density & (velocity < 0.003)
                             if stagnant.any():
-                                # Lenia/MNCA need stronger kicks to break stable rings
-                                amp = 0.025 if self.engine_name in ("lenia", "mnca") else 0.012
-                                perturb = np.random.randn(
-                                    self.sim_size, self.sim_size) * amp * stagnant
-                                self.engine.world = np.clip(w + perturb, 0.0, 1.0)
+                                if self.engine_name in ("lenia", "mnca"):
+                                    amp = 0.012
+                                else:
+                                    amp = 0.006
+                                self.engine.world = np.clip(
+                                    w + self._fast_noise() * amp * stagnant, 0.0, 1.0)
 
-                        # Store snapshot for next step
+                        # Store snapshot for next step (always, for velocity detection)
                         if self._prev_world is None:
                             self._prev_world = w.copy()
                         else:
                             self._prev_world[:] = w
 
-                        # Center noise: ONLY where density exists (no grainy background)
-                        noise = np.random.randn(
-                            self.sim_size, self.sim_size) * self._noise_mask
+                        # Center noise: fast low-res noise, masked to density
+                        noise = self._fast_noise() * self._noise_mask
                         noise *= has_density
                         self.engine.world = np.clip(
                             self.engine.world + noise, 0.0, 1.0)
 
-                        # Rotating stir current: slow directional sweep prevents
-                        # center crystallization. Adds density ahead, removes behind.
-                        # ~30s for full rotation. Only where organism exists.
+                        # Rotating stir current (cheap, every step)
                         self._stir_phase += 0.005
                         stir = (np.cos(self._stir_phase) * self._stir_dx +
                                 np.sin(self._stir_phase) * self._stir_dy)
@@ -1199,7 +1543,7 @@ class Viewer:
                     self.speed_accumulator -= 1.0
 
                 # Coverage management: keep organism alive and within bounds
-                if self.engine_name in ("lenia", "smoothlife", "mnca"):
+                if self.engine_name in ("lenia", "smoothlife", "mnca", "gray_scott"):
                     mass = float(self.engine.world.mean())
                     alive_frac = float((self.engine.world > 0.01).sum()) / self.engine.world.size
 
@@ -1213,17 +1557,22 @@ class Viewer:
                         # Don't reset iridescent — prevents color flash
                         if self.lfo_system:
                             self.lfo_system.reset_phase()
+                        if self.gs_lfo_system:
+                            self.gs_lfo_system.reset_phase()
                         if self.sl_lfo_system:
                             self.sl_lfo_system.reset_phase()
                         if self.mnca_lfo_system:
                             self.mnca_lfo_system.reset_phase()
                         self._stagnant_frames = 0
 
+                    # GS: skip noise injection — feed/kill dynamics handle coverage
+                    elif self.engine_name == "gray_scott":
+                        pass
+
                     # Too sparse (< 25%): amplify center noise to trigger growth
                     elif alive_frac < 0.25:
                         boost = 4.0 if alive_frac > 0.15 else 8.0
-                        boost_noise = np.random.randn(
-                            self.sim_size, self.sim_size) * self._noise_mask * boost
+                        boost_noise = self._fast_noise() * self._noise_mask * boost
                         self.engine.world = np.clip(
                             self.engine.world + boost_noise, 0.0, 1.0)
 
@@ -1235,20 +1584,20 @@ class Viewer:
                             self.engine.world *= self._containment
                         self.engine.world *= 0.97
 
-                    # Stagnation detection: sustained low change over many frames
-                    delta_mass = abs(mass - self._prev_mass)
-                    self._prev_mass = mass
-                    if delta_mass < 0.0001:
-                        self._stagnant_frames += 1
-                    else:
-                        self._stagnant_frames = max(0, self._stagnant_frames - 2)
+                    # Stagnation detection (not for GS — uses flow + LFO instead)
+                    if self.engine_name != "gray_scott":
+                        delta_mass = abs(mass - self._prev_mass)
+                        self._prev_mass = mass
+                        if delta_mass < 0.0001:
+                            self._stagnant_frames += 1
+                        else:
+                            self._stagnant_frames = max(0, self._stagnant_frames - 2)
 
-                    # After ~2 seconds of stagnation, gently boost noise amplitude
-                    if self._stagnant_frames > 120 and 0.10 < alive_frac < 0.85:
-                        boost_noise = np.random.randn(
-                            self.sim_size, self.sim_size) * self._noise_mask * 5
-                        self.engine.world = np.clip(
-                            self.engine.world + boost_noise, 0.0, 1.0)
+                        # After ~2 seconds of stagnation, gently boost noise amplitude
+                        if self._stagnant_frames > 120 and 0.10 < alive_frac < 0.85:
+                            boost_noise = self._fast_noise() * self._noise_mask * 5
+                            self.engine.world = np.clip(
+                                self.engine.world + boost_noise, 0.0, 1.0)
 
             # Render canvas
             screen.fill(THEME["bg"])

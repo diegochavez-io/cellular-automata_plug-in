@@ -258,8 +258,8 @@ PRESETS = {
         "delta": 0.035,
         "seed": "blobs",
         "palette": "bioluminescent",
-        "flow_bubble": 0.40, "flow_rotate": 0.30, "flow_swirl": 0.25,
-        "flow_vortex": 0.20, "flow_radial": -0.15,
+        "flow_bubble": 0.45, "flow_rotate": 0.65, "flow_swirl": 0.50,
+        "flow_vortex": 0.40, "flow_radial": -0.20,
     },
     "mnca_worm": {
         "engine": "mnca",
@@ -274,8 +274,8 @@ PRESETS = {
         "delta": 0.045,
         "seed": "blobs",
         "palette": "deep_coral",
-        "flow_rotate": 0.40, "flow_swirl": 0.30, "flow_vortex": 0.25,
-        "flow_bubble": 0.15, "flow_radial": -0.10,
+        "flow_rotate": 0.65, "flow_swirl": 0.50, "flow_vortex": 0.40,
+        "flow_bubble": 0.35, "flow_radial": -0.20,
     },
     "mnca_hunt": {
         "engine": "mnca",
@@ -330,10 +330,11 @@ PRESETS = {
     "medusa": {
         "engine": "gray_scott",
         "name": "GS Medusa",
-        "description": "Pulsing jellyfish expansion with slow counter-spin",
-        "feed": 0.022, "kill": 0.056, "Du": 0.20, "Dv": 0.13,
+        "description": "Cell division — spots form, split, and multiply",
+        "feed": 0.030, "kill": 0.058, "Du": 0.21, "Dv": 0.105,
         "seed": "dense",
-        "flow_bubble": 0.50, "flow_rotate": -0.15,
+        "flow_bubble": 0.50, "flow_rotate": -0.30, "flow_swirl": 0.25,
+        "flow_vortex": 0.20, "flow_radial": -0.15,
     },
     "labyrinth": {
         "engine": "gray_scott",

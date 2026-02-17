@@ -32,10 +32,10 @@ PALETTES = {
         "d": np.array([0.00, 0.25, 0.55], dtype=np.float32),   # Cyan-green-orange-pink shift
     },
     "bioluminescent": {
-        # Deep ocean: teal, cyan, peach, coral — aquatic vivid
+        # Deep ocean: teal, cyan, magenta, peach, coral — rich aquatic vivid
         "a": np.array([0.45, 0.52, 0.55], dtype=np.float32),   # Teal-biased base
         "b": np.array([0.50, 0.45, 0.42], dtype=np.float32),   # Wide warm range
-        "c": np.array([1.5, 1.0, 1.3], dtype=np.float32),
+        "c": np.array([2.2, 1.6, 2.0], dtype=np.float32),      # More cycles for color variety
         "d": np.array([0.08, 0.30, 0.55], dtype=np.float32),
     },
     "deep_coral": {

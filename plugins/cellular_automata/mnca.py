@@ -177,21 +177,28 @@ class MNCA(CAEngine):
         np.clip(self.world, 0, 1, out=self.world)
         self.generation = 0
 
-    def seed_multiple_blobs(self, n_blobs=8, blob_radius=None, density=0.6):
-        """Seed with overlapping gaussian blobs clustered near center."""
-        if blob_radius is None:
-            blob_radius = self.size // 10
+    def seed_multiple_blobs(self, n_blobs=12, blob_radius=None, density=0.6):
+        """Seed with highly varied blobs filling ~50% of frame.
+
+        Uses log-uniform radius distribution and wide scatter.
+        Larger base radius and more blobs to fill the expanded containment zone.
+        """
+        base_radius = blob_radius if blob_radius is not None else self.size // 7
         self.world[:] = 0
         center = self.size // 2
-        scatter = self.size * 0.15
+        scatter = self.size * 0.28
         Y, X = np.ogrid[:self.size, :self.size]
         for _ in range(n_blobs):
+            # Log-uniform radius: 25% to 250% of base
+            r = int(base_radius * np.exp(np.random.uniform(np.log(0.25), np.log(2.5))))
+            r = max(5, r)
+            blob_density = density * (0.5 + np.random.random() * 0.5)
             cy = int(center + np.random.randn() * scatter)
             cx = int(center + np.random.randn() * scatter)
-            cy = max(blob_radius, min(self.size - blob_radius, cy))
-            cx = max(blob_radius, min(self.size - blob_radius, cx))
+            cy = max(r, min(self.size - r, cy))
+            cx = max(r, min(self.size - r, cx))
             dist = np.sqrt((X - cx)**2 + (Y - cy)**2).astype(np.float64)
-            blob = np.exp(-0.5 * (dist / (blob_radius * 0.5)) ** 2) * density
+            blob = np.exp(-0.5 * (dist / (r * 0.5)) ** 2) * blob_density
             noise = np.random.random((self.size, self.size)) * 0.4 + 0.6
             self.world += blob * noise
         np.clip(self.world, 0, 1, out=self.world)

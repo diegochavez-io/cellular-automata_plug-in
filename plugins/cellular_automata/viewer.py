@@ -580,18 +580,17 @@ class Viewer:
         return mask.astype(np.float32)
 
     def _build_mnca_containment(self, size):
-        """Radial containment for MNCA.
+        """Radial containment for MNCA — wide enough to fill 50%+ of frame.
 
-        Wide gaussian with soft fade — no visible edge artifacts.
+        Linear fade starting at 60% radius. No suppression inside that zone
+        so organisms can spread and fill the frame as a video source.
         """
         center = size / 2.0
         Y, X = np.ogrid[:size, :size]
         dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
-        # Wide gaussian: 1.0 at center, soft fade, ~0.5 at 50% radius
-        mask = np.exp(-0.5 * (dist / 0.50) ** 2)
-        # Gentle zero toward borders (no hard cliff)
-        mask[dist > 0.75] *= np.clip(1.0 - (dist[dist > 0.75] - 0.75) / 0.15, 0.0, 1.0)
-        return mask.astype(np.float32)
+        # 1.0 inside 60% radius, gentle linear fade beyond
+        fade = np.clip((dist - 0.60) / 0.25, 0.0, 1.0)
+        return (1.0 - fade * 0.04).astype(np.float32)
 
     def _build_flow_fields(self, size):
         """Pre-compute 7 velocity fields as (vx, vy) float32 pairs.
@@ -1303,9 +1302,10 @@ class Viewer:
             lfo_phase = self.mnca_lfo_system.delta_lfo.phase
 
         if self.engine_name == "gray_scott":
-            # GS V values typically range 0-0.35. Contrast stretch to full [0, 1]
-            # so the iridescent pipeline sees clear structure with full dynamic range.
-            world = np.clip(self.engine.world * 3.0, 0.0, 1.0)
+            # GS V values typically range 0-0.35. Dead zone + contrast stretch:
+            # V < 0.015 maps to black (eliminates background noise/color),
+            # remaining range stretched to full [0, 1].
+            world = np.clip((self.engine.world - 0.015) * 3.5, 0.0, 1.0)
         elif self.engine_name == "cca":
             # CCA: mask to circular region on black, heavy blur to remove pixelation
             world = self.engine.world * self._cca_mask
@@ -1681,9 +1681,9 @@ class Viewer:
                             self._drop_seed_cluster()
                             self._stagnant_frames = 0
 
-                    # Nucleation: only when nearly dead, drop a cluster
-                    # so seeds can interact and form something together
-                    if self.engine_name != "gray_scott" and alive_frac < 0.10:
+                    # Nucleation: only when truly dead (< 2%), drop a cluster
+                    # Higher threshold caused constant blob-drop glitch on MNCA
+                    if self.engine_name != "gray_scott" and alive_frac < 0.02:
                         self._nucleation_counter += 1
                         if self._nucleation_counter >= 30:
                             self._nucleation_counter = 0

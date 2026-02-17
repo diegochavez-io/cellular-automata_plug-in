@@ -44,9 +44,35 @@ from .smoothing import SmoothedParameter, LeniaParameterCoupler
 try:
     from scipy.ndimage import gaussian_filter as _scipy_gaussian
     from scipy.ndimage import zoom as _scipy_zoom
+    from scipy.ndimage import maximum_filter as _scipy_maximum
 except ImportError:
     _scipy_gaussian = None
     _scipy_zoom = None
+    _scipy_maximum = None
+
+
+def _dilate_world(world, thickness=5):
+    """Thicken structures via max-filter (morphological dilation).
+
+    Unlike blur which smudges detail, dilation makes thin lines physically
+    wider while preserving their shape and edges.
+    Light blur applied after for softness.
+    """
+    if _scipy_maximum is None or thickness < 2:
+        return world
+    # Downsample for speed, dilate, upsample
+    factor = 4
+    small = world[::factor, ::factor].copy()
+    small_thick = max(2, thickness // factor)
+    dilated = _scipy_maximum(small, size=small_thick)
+    # Light blur for soft edges
+    if _scipy_gaussian is not None:
+        dilated = _scipy_gaussian(dilated, max(1.0, small_thick * 0.4))
+    # Bilinear upsample
+    h, w = world.shape
+    if _scipy_zoom is not None:
+        return _scipy_zoom(dilated, factor, order=1)[:h, :w]
+    return np.repeat(np.repeat(dilated, factor, axis=0), factor, axis=1)[:h, :w]
 
 
 def _blur_world(world, sigma=12):
@@ -167,10 +193,10 @@ class LeniaLFOSystem:
         base_T = preset.get("T", 10)
 
         # Create three independent LFOs with different frequencies
-        # Frequencies chosen to avoid synchronization (prime-ish periods)
-        self.mu_lfo = SinusoidalLFO(base_mu, 0.03, frequency_hz=0.015)      # ~67s period
-        self.sigma_lfo = SinusoidalLFO(base_sigma, 0.006, frequency_hz=0.012)  # ~83s period
-        self.T_lfo = SinusoidalLFO(base_T, base_T * 0.25, frequency_hz=0.014)  # ~71s period
+        # Amplitudes proportional to base value (15% modulation) for safe breathing
+        self.mu_lfo = SinusoidalLFO(base_mu, base_mu * 0.15, frequency_hz=0.015)      # ~67s period
+        self.sigma_lfo = SinusoidalLFO(base_sigma, base_sigma * 0.15, frequency_hz=0.012)  # ~83s period
+        self.T_lfo = SinusoidalLFO(base_T, base_T * 0.20, frequency_hz=0.014)  # ~71s period
 
         # Global speed multiplier (adjustable via slider)
         self.lfo_speed = 1.0
@@ -207,11 +233,15 @@ class LeniaLFOSystem:
         Args:
             preset: Preset dict with potentially updated base values
         """
-        self.mu_lfo.base_value = preset.get("mu", 0.15)
-        self.sigma_lfo.base_value = preset.get("sigma", 0.017)
+        base_mu = preset.get("mu", 0.15)
+        base_sigma = preset.get("sigma", 0.017)
         base_T = preset.get("T", 10)
+        self.mu_lfo.base_value = base_mu
+        self.mu_lfo.amplitude = base_mu * 0.15
+        self.sigma_lfo.base_value = base_sigma
+        self.sigma_lfo.amplitude = base_sigma * 0.15
         self.T_lfo.base_value = base_T
-        self.T_lfo.amplitude = base_T * 0.25
+        self.T_lfo.amplitude = base_T * 0.20
 
     def reset_phase(self):
         """Reset all LFO phases to zero (explicit reseed only)."""
@@ -330,6 +360,9 @@ class Viewer:
         self.sim_speed = 1.0  # default: smooth continuous
         self.speed_accumulator = 0.0
 
+        # Render blur (Thickness slider): 0 = sharp, 30 = very soft/thick
+        self.render_blur_sigma = 0
+
         # Iridescent color pipeline
         self.iridescent = IridescentPipeline(sim_size)
 
@@ -354,6 +387,8 @@ class Viewer:
         self._color_offset = self._build_color_offset(sim_size)
         # CCA render mask: soft circle to contain on black background
         self._cca_mask = self._build_cca_mask(sim_size)
+        # MNCA containment: aggressive radial mask applied per-step
+        self._mnca_containment = self._build_mnca_containment(sim_size)
 
         # Engine and preset state
         self.preset_key = start_preset
@@ -397,25 +432,38 @@ class Viewer:
         Y, X = np.ogrid[:size, :size]
         dist_sq = ((X - center) ** 2 + (Y - center) ** 2) / (center * center)
         # Gaussian with sigma ~0.3 of the radius
-        return (0.003 * np.exp(-dist_sq / (2 * 0.15 ** 2))).astype(np.float64)
+        return (0.008 * np.exp(-dist_sq / (2 * 0.18 ** 2))).astype(np.float64)
 
     def _build_color_offset(self, size):
-        """Radial + angular color offset for multi-color sweeps.
+        """Noise-based spatial color offset for organic color pockets.
 
-        Creates broad color variation across the organism:
-        - Radial: center vs edges have different hues
-        - Angular: different sides have different hues
-        Combined with hue_phase rotation, colors continuously sweep around.
+        Creates natural-looking regions of different colors across the
+        organism — like pockets of color in nature, not uniform gradients.
+        Uses low-frequency noise blobs + subtle radial variation.
         """
         center = size / 2.0
         Y, X = np.ogrid[:size, :size]
         dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
-        angle = np.arctan2(Y - center, X - center)  # [-pi, pi]
-        # Radial: 0.0 at center -> 0.35 at edges
-        radial = np.clip(dist, 0, 1) * 0.35
-        # Angular: 0.0 -> 0.25 around the circle
-        angular = ((angle / (2.0 * np.pi)) + 0.5) * 0.25
-        return (radial + angular).astype(np.float32)
+
+        # Subtle radial: 0.0 at center -> 0.25 at edges
+        radial = np.clip(dist, 0, 1) * 0.25
+
+        # Low-frequency noise blobs for color pockets
+        # Generate small noise, upsample for large organic blobs
+        noise_size = max(8, size // 64)
+        noise_small = np.random.randn(noise_size, noise_size).astype(np.float32)
+        if _scipy_gaussian is not None:
+            noise_small = _scipy_gaussian(noise_small, 1.5)
+        if _scipy_zoom is not None:
+            noise = _scipy_zoom(noise_small, size / noise_size, order=1)[:size, :size]
+        else:
+            factor = size // noise_size
+            noise = np.repeat(np.repeat(noise_small, factor, axis=0), factor, axis=1)[:size, :size]
+        # Normalize to [-0.3, 0.3] range for color pocket variation
+        noise_range = max(noise.max() - noise.min(), 0.001)
+        noise = (noise - noise.min()) / noise_range * 0.6 - 0.3
+
+        return (radial + noise).astype(np.float32)
 
     def _build_cca_mask(self, size):
         """Soft circular mask for CCA rendering.
@@ -432,6 +480,20 @@ class Viewer:
         # Squared falloff for softer edge
         mask = mask ** 2
         return mask.astype(np.float32)
+
+    def _build_mnca_containment(self, size):
+        """Radial containment for MNCA.
+
+        Wide gaussian with soft fade — no visible edge artifacts.
+        """
+        center = size / 2.0
+        Y, X = np.ogrid[:size, :size]
+        dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
+        # Wide gaussian: 1.0 at center, soft fade, ~0.5 at 50% radius
+        mask = np.exp(-0.5 * (dist / 0.50) ** 2)
+        # Gentle zero toward borders (no hard cliff)
+        mask[dist > 0.75] *= np.clip(1.0 - (dist[dist > 0.75] - 0.75) / 0.15, 0.0, 1.0)
+        return mask.astype(np.float64)
 
     def _scale_R(self, base_R):
         """Scale kernel radius for current sim resolution (Lenia only)."""
@@ -573,6 +635,9 @@ class Viewer:
         else:
             self.iridescent._hue_per_breath = 0.08
 
+        # Thickness starts at 0 — user controls via slider
+        self.render_blur_sigma = 0
+
         # Create smoothed parameters for all engine sliders
         self.smoothed_params = {}
         for sdef in self.engine.__class__.get_slider_defs():
@@ -616,15 +681,8 @@ class Viewer:
             self.sliders["speed"].set_value(self.sim_speed)
         if "brush" in self.sliders:
             self.sliders["brush"].set_value(self.brush_radius)
-        if "lfo_speed" in self.sliders:
-            if self.lfo_system:
-                self.sliders["lfo_speed"].set_value(self.lfo_system.lfo_speed)
-            elif self.gs_lfo_system:
-                self.sliders["lfo_speed"].set_value(self.gs_lfo_system.lfo_speed)
-            elif self.sl_lfo_system:
-                self.sliders["lfo_speed"].set_value(self.sl_lfo_system.lfo_speed)
-            elif self.mnca_lfo_system:
-                self.sliders["lfo_speed"].set_value(self.mnca_lfo_system.lfo_speed)
+        if "thickness" in self.sliders:
+            self.sliders["thickness"].set_value(self.render_blur_sigma)
         # Hue slider
         if "hue" in self.sliders:
             self.sliders["hue"].set_value(getattr(self, '_hue_value', 0.25))
@@ -667,14 +725,26 @@ class Viewer:
             "Speed", 0.95, 5.0, self.sim_speed, fmt=".2f",
             on_change=self._on_speed_change
         )
-        self.sliders["lfo_speed"] = panel.add_slider(
-            "Breath", 0.0, 3.0, 1.0, fmt=".2f",
-            on_change=self._on_lfo_speed_change
+        self.sliders["thickness"] = panel.add_slider(
+            "Thickness", 0, 30, self.render_blur_sigma, fmt=".0f", step=1,
+            on_change=self._on_thickness_change
         )
         self.sliders["brush"] = panel.add_slider(
             "Brush", 3, 80, self.brush_radius, fmt=".0f", step=1,
             on_change=lambda v: setattr(self, 'brush_radius', int(v))
         )
+
+        # --- Engine-specific shape params (in main controls) ---
+        engine_sliders = self.engine.__class__.get_slider_defs()
+        if engine_sliders:
+            panel.add_section("SHAPE")
+            for sdef in engine_sliders:
+                self.sliders[sdef["key"]] = panel.add_slider(
+                    sdef["label"], sdef["min"], sdef["max"], sdef["default"],
+                    fmt=sdef.get("fmt", ".3f"),
+                    step=sdef.get("step"),
+                    on_change=self._make_param_callback(sdef["key"])
+                )
 
         # --- Actions ---
         panel.add_spacer(4)
@@ -686,15 +756,6 @@ class Viewer:
 
         # --- Collapsible Advanced section ---
         advanced = panel.add_collapsible_section("Advanced", expanded=False)
-
-        # Engine-specific raw params
-        for sdef in self.engine.__class__.get_slider_defs():
-            self.sliders[sdef["key"]] = panel.add_slider_to(
-                advanced, sdef["label"], sdef["min"], sdef["max"], sdef["default"],
-                fmt=sdef.get("fmt", ".3f"),
-                step=sdef.get("step"),
-                on_change=self._make_param_callback(sdef["key"])
-            )
 
         # Tint RGB sliders
         self.sliders["tint_r"] = panel.add_slider_to(
@@ -751,16 +812,9 @@ class Viewer:
     def _on_speed_change(self, val):
         self.sim_speed = val
 
-    def _on_lfo_speed_change(self, val):
-        """Update LFO speed multiplier."""
-        if self.lfo_system:
-            self.lfo_system.lfo_speed = val
-        if self.gs_lfo_system:
-            self.gs_lfo_system.lfo_speed = val
-        if self.sl_lfo_system:
-            self.sl_lfo_system.lfo_speed = val
-        if self.mnca_lfo_system:
-            self.mnca_lfo_system.lfo_speed = val
+    def _on_thickness_change(self, val):
+        """Update render blur sigma (Thickness slider)."""
+        self.render_blur_sigma = int(val)
 
     def _on_hue_change(self, val):
         """Update hue via cosine color wheel."""
@@ -851,22 +905,33 @@ class Viewer:
             )
             rgb = self._apply_bloom(rgb, intensity=0.4)
         elif self.engine_name == "smoothlife":
-            # SmoothLife: continuous fields are already smooth, just light bloom
-            rgb = self.iridescent.render(
-                self.engine.world, dt, lfo_phase=lfo_phase,
-                t_offset=self._color_offset,
-            )
-            rgb = self._apply_bloom(rgb, intensity=0.4)
-        elif self.engine_name == "mnca":
-            # MNCA: light blur for fluffy organic feel + bloom for glow
-            world = _blur_world(self.engine.world, sigma=7)
+            world = self.engine.world
+            if self.render_blur_sigma > 0:
+                world = _dilate_world(world, thickness=self.render_blur_sigma)
             rgb = self.iridescent.render(
                 world, dt, lfo_phase=lfo_phase,
                 t_offset=self._color_offset,
             )
-            rgb = self._apply_bloom(rgb, intensity=0.5)
+            rgb = self._apply_bloom(rgb, intensity=0.4)
+        elif self.engine_name == "mnca":
+            world = self.engine.world
+            if self.render_blur_sigma > 0:
+                world = _dilate_world(world, thickness=self.render_blur_sigma)
+            rgb = self.iridescent.render(
+                world, dt, lfo_phase=lfo_phase,
+                t_offset=self._color_offset,
+            )
+            rgb = self._apply_bloom(rgb, intensity=0.4)
         else:
-            rgb = self.iridescent.render(self.engine.world, dt, lfo_phase=lfo_phase)
+            # Lenia + others
+            world = self.engine.world
+            if self.render_blur_sigma > 0:
+                world = _dilate_world(world, thickness=self.render_blur_sigma)
+            rgb = self.iridescent.render(
+                world, dt, lfo_phase=lfo_phase,
+                t_offset=self._color_offset,
+            )
+            rgb = self._apply_bloom(rgb, intensity=0.4)
 
         surface = pygame.surfarray.make_surface(rgb.swapaxes(0, 1).copy())
         return surface
@@ -956,10 +1021,12 @@ class Viewer:
         os.makedirs(screenshots_dir, exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         path = os.path.join(screenshots_dir, f"ca_{self.preset_key}_{timestamp}.png")
+        latest_path = os.path.join(screenshots_dir, "latest.png")
 
-        rgb = self.iridescent.render(self.engine.world, 0.0)
-        save_surface = pygame.surfarray.make_surface(rgb.swapaxes(0, 1).copy())
+        # Render with full pipeline (blur, bloom, color offset) — matches what's on screen
+        save_surface = self._render_frame(0.016)
         pygame.image.save(save_surface, path)
+        pygame.image.save(save_surface, latest_path)
         print(f"Screenshot saved: {path}")
 
     def run(self):
@@ -1077,12 +1144,34 @@ class Viewer:
                 self.speed_accumulator += self.sim_speed
                 while self.speed_accumulator >= 1.0:
                     self.engine.step()
-                    if self.engine_name in ("lenia", "smoothlife", "mnca"):
-                        # Containment: decay edges to keep pattern centered
-                        self.engine.world *= self._containment
+                    if self.engine_name == "mnca":
+                        # MNCA: radial containment (keeps organism from wrapping)
+                        self.engine.world *= self._mnca_containment
                         # Center noise: tiny perturbations keep interior evolving
                         noise = np.random.randn(self.sim_size, self.sim_size) * self._noise_mask
                         self.engine.world = np.clip(self.engine.world + noise, 0.0, 1.0)
+                        # Periodic blob injection: keeps MNCA constantly reshaping
+                        if np.random.random() < 0.02:
+                            s = self.sim_size
+                            cx = s // 2 + np.random.randint(-s // 6, s // 6)
+                            cy = s // 2 + np.random.randint(-s // 6, s // 6)
+                            self.engine.add_blob(cx, cy, radius=max(8, s // 30), value=0.4)
+                    elif self.engine_name in ("lenia", "smoothlife"):
+                        # Containment: gentle decay edges to keep pattern centered
+                        self.engine.world *= self._containment
+                        # Center noise: perturbations keep interior evolving
+                        noise = np.random.randn(self.sim_size, self.sim_size) * self._noise_mask
+                        self.engine.world = np.clip(self.engine.world + noise, 0.0, 1.0)
+                        # Periodic churn: alternate add/erase to force center reshaping
+                        if np.random.random() < 0.03:
+                            s = self.sim_size
+                            cx = s // 2 + np.random.randint(-s // 5, s // 5)
+                            cy = s // 2 + np.random.randint(-s // 5, s // 5)
+                            r = max(8, s // 25)
+                            if np.random.random() < 0.5:
+                                self.engine.add_blob(cx, cy, radius=r, value=0.4)
+                            else:
+                                self.engine.remove_blob(cx, cy, radius=r)
                     elif self.engine_name == "gray_scott":
                         # Periodic blob injection: seed small V patches near center
                         # to keep the pattern constantly evolving (never fully static)

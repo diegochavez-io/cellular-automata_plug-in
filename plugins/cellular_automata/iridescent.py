@@ -17,26 +17,26 @@ import numpy as np
 
 PALETTES = {
     "oil_slick": {
-        "a": np.array([0.5, 0.5, 0.5], dtype=np.float32),
-        "b": np.array([0.5, 0.5, 0.5], dtype=np.float32),
+        "a": np.array([0.52, 0.52, 0.52], dtype=np.float32),
+        "b": np.array([0.45, 0.45, 0.45], dtype=np.float32),
         "c": np.array([2.0, 2.0, 2.0], dtype=np.float32),
         "d": np.array([0.00, 0.33, 0.67], dtype=np.float32),
     },
     "cuttlefish": {
-        "a": np.array([0.3, 0.5, 0.6], dtype=np.float32),
-        "b": np.array([0.4, 0.4, 0.3], dtype=np.float32),
+        "a": np.array([0.35, 0.50, 0.58], dtype=np.float32),
+        "b": np.array([0.36, 0.36, 0.30], dtype=np.float32),
         "c": np.array([2.0, 2.4, 1.6], dtype=np.float32),
         "d": np.array([0.0, 0.25, 0.5], dtype=np.float32),
     },
     "bioluminescent": {
-        "a": np.array([0.2, 0.4, 0.5], dtype=np.float32),
-        "b": np.array([0.5, 0.5, 0.4], dtype=np.float32),
+        "a": np.array([0.25, 0.42, 0.50], dtype=np.float32),
+        "b": np.array([0.45, 0.45, 0.36], dtype=np.float32),
         "c": np.array([3.0, 2.0, 2.0], dtype=np.float32),
         "d": np.array([0.15, 0.4, 0.6], dtype=np.float32),
     },
     "deep_coral": {
-        "a": np.array([0.4, 0.3, 0.5], dtype=np.float32),
-        "b": np.array([0.4, 0.5, 0.4], dtype=np.float32),
+        "a": np.array([0.42, 0.35, 0.50], dtype=np.float32),
+        "b": np.array([0.36, 0.42, 0.36], dtype=np.float32),
         "c": np.array([1.6, 2.0, 2.4], dtype=np.float32),
         "d": np.array([0.1, 0.35, 0.55], dtype=np.float32),
     },
@@ -114,9 +114,11 @@ class IridescentPipeline:
              self.tint_b * self.brightness], dtype=np.float32
         )
 
-        # Vectorized: (256, 1, 3) * (1, 256, 1) * (3,) * 255
+        alpha_vals = _ALPHA_CURVE  # (256,) float32, 0-1
+
+        # (256 colors, 256 alpha levels, 3 channels) → apply alpha + tint + brightness
         result = (colors[:, np.newaxis, :] *
-                  _ALPHA_CURVE[np.newaxis, :, np.newaxis] *
+                  alpha_vals[np.newaxis, :, np.newaxis] *
                   tint_bright * 255.0)
         np.clip(result, 0, 255, out=result)
         self._lut_2d[:] = result.reshape(-1, 3).astype(np.uint8)

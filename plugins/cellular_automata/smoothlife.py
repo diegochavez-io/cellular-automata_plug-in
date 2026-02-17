@@ -258,16 +258,10 @@ class SmoothLife(CAEngine):
     @classmethod
     def get_slider_defs(cls):
         return [
-            {"key": "b1", "label": "Birth low (b1)", "section": "TRANSITION",
-             "min": 0.05, "max": 0.50, "default": 0.278, "fmt": ".3f"},
-            {"key": "b2", "label": "Birth high (b2)", "section": "TRANSITION",
-             "min": 0.10, "max": 0.60, "default": 0.365, "fmt": ".3f"},
-            {"key": "d1", "label": "Survive low (d1)", "section": "TRANSITION",
-             "min": 0.05, "max": 0.50, "default": 0.267, "fmt": ".3f"},
-            {"key": "d2", "label": "Survive high (d2)", "section": "TRANSITION",
-             "min": 0.10, "max": 0.60, "default": 0.445, "fmt": ".3f"},
-            {"key": "alpha_n", "label": "Sharpness (alpha)", "section": "SIGMOID",
-             "min": 0.001, "max": 0.10, "default": 0.028, "fmt": ".3f"},
-            {"key": "ri", "label": "Inner radius (ri)", "section": "KERNEL",
-             "min": 2, "max": 15, "default": 4, "fmt": ".0f", "step": 1},
+            {"key": "b1", "label": "Birth", "section": "SHAPE",
+             "min": 0.18, "max": 0.38, "default": 0.278, "fmt": ".3f"},
+            {"key": "b2", "label": "Spread", "section": "SHAPE",
+             "min": 0.28, "max": 0.50, "default": 0.365, "fmt": ".3f"},
+            {"key": "d2", "label": "Survive", "section": "SHAPE",
+             "min": 0.35, "max": 0.60, "default": 0.445, "fmt": ".3f"},
         ]

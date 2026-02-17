@@ -232,10 +232,6 @@ class MNCA(CAEngine):
     @classmethod
     def get_slider_defs(cls):
         return [
-            {"key": "delta", "label": "Delta", "section": "RULES",
-             "min": 0.005, "max": 0.15, "default": 0.05, "fmt": ".3f"},
-            {"key": "inner_r0", "label": "Ring 0 inner", "section": "NEIGHBORHOODS",
-             "min": 0, "max": 10, "default": 0, "fmt": ".0f", "step": 1},
-            {"key": "outer_r0", "label": "Ring 0 outer", "section": "NEIGHBORHOODS",
-             "min": 2, "max": 25, "default": 5, "fmt": ".0f", "step": 1},
+            {"key": "delta", "label": "Force", "section": "SHAPE",
+             "min": 0.005, "max": 0.08, "default": 0.05, "fmt": ".3f"},
         ]

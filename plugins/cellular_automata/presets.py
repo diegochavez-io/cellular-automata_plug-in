@@ -218,11 +218,11 @@ PRESETS = {
         "description": "Cells that grow, split, and divide like organisms",
         "rings": [(0, 6), (6, 12), (12, 20)],
         "rules": [
-            [{"low": 0.18, "high": 0.28}],
-            [{"low": 0.30, "high": 0.50}],
-            [{"low": 0.10, "high": 0.20}],
+            [{"low": 0.12, "high": 0.35}],
+            [{"low": 0.20, "high": 0.55}],
+            [{"low": 0.06, "high": 0.25}],
         ],
-        "delta": 0.04,
+        "delta": 0.035,
         "seed": "blobs",
         "palette": "bioluminescent",
     },
@@ -232,11 +232,11 @@ PRESETS = {
         "description": "Elongated worm-like structures that crawl",
         "rings": [(0, 3), (5, 10), (12, 18)],
         "rules": [
-            [{"low": 0.22, "high": 0.32}],
-            [{"low": 0.15, "high": 0.35}],
-            [{"low": 0.05, "high": 0.15}],
+            [{"low": 0.18, "high": 0.38}],
+            [{"low": 0.12, "high": 0.40}],
+            [{"low": 0.04, "high": 0.18}],
         ],
-        "delta": 0.035,
+        "delta": 0.045,
         "seed": "blobs",
         "palette": "deep_coral",
     },
@@ -353,12 +353,11 @@ PRESETS = {
 # Unified preset order — shown in UI, number keys 1-9 map here
 UNIFIED_ORDER = [
     # Lenia
-    "coral", "amoeba", "jellyfish", "lava_lamp", "nebula",
-    "tide_pool", "mycelium", "heartbeat",
+    "amoeba", "lava_lamp", "tide_pool",
     # SmoothLife
-    "sl_gliders", "sl_worms", "sl_elastic", "sl_pulse", "sl_chaos",
+    "sl_gliders", "sl_worms", "sl_pulse",
     # MNCA
-    "mnca_soliton", "mnca_mitosis", "mnca_worm", "mnca_hunt", "mnca_coral",
+    "mnca_mitosis", "mnca_worm",
 ]
 
 # Legacy per-engine ordering (kept for compatibility)

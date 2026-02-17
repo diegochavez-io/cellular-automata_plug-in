@@ -201,12 +201,10 @@ class Lenia(CAEngine):
     @classmethod
     def get_slider_defs(cls):
         return [
-            {"key": "mu", "label": "mu (center)", "section": "GROWTH FUNCTION",
-             "min": 0.01, "max": 0.40, "default": 0.15, "fmt": ".4f"},
-            {"key": "sigma", "label": "sigma (width)", "section": "GROWTH FUNCTION",
-             "min": 0.002, "max": 0.08, "default": 0.017, "fmt": ".4f"},
-            {"key": "R", "label": "Radius (R)", "section": "KERNEL",
-             "min": 5, "max": 60, "default": 13, "fmt": ".0f", "step": 1},
-            {"key": "T", "label": "Time res (T)", "section": "KERNEL",
-             "min": 1, "max": 30, "default": 10, "fmt": ".0f", "step": 1},
+            {"key": "mu", "label": "Growth", "section": "SHAPE",
+             "min": 0.08, "max": 0.28, "default": 0.15, "fmt": ".3f"},
+            {"key": "sigma", "label": "Tolerance", "section": "SHAPE",
+             "min": 0.005, "max": 0.045, "default": 0.017, "fmt": ".3f"},
+            {"key": "T", "label": "Smoothness", "section": "SHAPE",
+             "min": 5, "max": 25, "default": 10, "fmt": ".0f", "step": 1},
         ]

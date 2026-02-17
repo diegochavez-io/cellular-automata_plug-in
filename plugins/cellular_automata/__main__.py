@@ -6,9 +6,9 @@ Usage:
 
 Examples:
     python -m cellular_automata
-    python -m cellular_automata orbium
-    python -m cellular_automata classic_life --size 512
-    python -m cellular_automata gs_maze --window 1200x1200
+    python -m cellular_automata coral
+    python -m cellular_automata jellyfish --size 512
+    python -m cellular_automata reef --window 1200x1200
 
 Engines:
     lenia       - Continuous CA with smooth kernels (default)
@@ -25,7 +25,7 @@ from .presets import PRESET_ORDER, ENGINE_ORDER, list_presets
 
 
 def main():
-    preset = "orbium"
+    preset = "coral"
     sim_size = 1024
     win_w, win_h = 900, 900
 

@@ -30,13 +30,58 @@ from .lenia import Lenia
 from .life import Life
 from .excitable import Excitable
 from .gray_scott import GrayScott
+from .cca import CCA
 from .iridescent import IridescentPipeline
 from .presets import (
-    PRESETS, PRESET_ORDER, PRESET_ORDERS, ENGINE_ORDER,
+    PRESETS, PRESET_ORDER, PRESET_ORDERS, ENGINE_ORDER, UNIFIED_ORDER,
     get_preset, get_presets_for_engine,
 )
 from .controls import ControlPanel, THEME
-from .smoothing import SmoothedParameter, LeniaParameterCoupler, SurvivalGuardian, PresetMorpher
+from .smoothing import SmoothedParameter, LeniaParameterCoupler
+
+try:
+    from scipy.ndimage import gaussian_filter as _scipy_gaussian
+    from scipy.ndimage import zoom as _scipy_zoom
+except ImportError:
+    _scipy_gaussian = None
+    _scipy_zoom = None
+
+
+def _blur_world(world, sigma=12):
+    """Fast blur via downsample -> gaussian -> bilinear upsample.
+
+    At 4x downsample: 1024->256, blur at sigma/4, bilinear upsample back.
+    Bilinear zoom eliminates the blocky grid pattern from np.repeat.
+    """
+    h, w = world.shape
+    factor = 4
+    small = world[::factor, ::factor].copy().astype(np.float32)
+    small_sigma = max(1.0, sigma / factor)
+
+    if _scipy_gaussian is not None:
+        blurred = _scipy_gaussian(small, small_sigma)
+    else:
+        # Fallback: separable box blur via cumulative sums (3 passes)
+        blurred = small
+        r = max(1, int(small_sigma * 0.8))
+        k = 2 * r + 1
+        for _ in range(3):
+            p = np.pad(blurred, ((0, 0), (r, r)), mode='reflect')
+            cs = np.empty((p.shape[0], p.shape[1] + 1), dtype=np.float32)
+            cs[:, 0] = 0
+            np.cumsum(p, axis=1, out=cs[:, 1:])
+            blurred = (cs[:, k:] - cs[:, :-k]) / k
+            p = np.pad(blurred, ((r, r), (0, 0)), mode='reflect')
+            cs = np.empty((p.shape[0] + 1, p.shape[1]), dtype=np.float32)
+            cs[0, :] = 0
+            np.cumsum(p, axis=0, out=cs[1:, :])
+            blurred = (cs[k:, :] - cs[:-k, :]) / k
+
+    # Bilinear upsample for smooth result (no blocky grid)
+    if _scipy_zoom is not None:
+        return _scipy_zoom(blurred, factor, order=1)[:h, :w]
+    else:
+        return np.repeat(np.repeat(blurred, factor, axis=0), factor, axis=1)[:h, :w]
 
 
 PANEL_WIDTH = 300
@@ -48,6 +93,7 @@ ENGINE_CLASSES = {
     "life": Life,
     "excitable": Excitable,
     "gray_scott": GrayScott,
+    "cca": CCA,
 }
 
 ENGINE_LABELS = {
@@ -55,6 +101,7 @@ ENGINE_LABELS = {
     "life": "Life",
     "excitable": "Excitable",
     "gray_scott": "Gray-Scott",
+    "cca": "Cyclic CA",
 }
 
 
@@ -167,8 +214,36 @@ class LeniaLFOSystem:
         self.T_lfo.reset()
 
 
+class GrayScottLFOSystem:
+    """Single LFO for Gray-Scott feed rate modulation.
+
+    Modulates feed by +/-0.006 around base value with ~30s period.
+    Makes holes expand/contract and tendrils wiggle — strong enough
+    to push the pattern between regimes for visible structural change.
+    """
+
+    def __init__(self, preset):
+        base_feed = preset.get("feed", 0.037)
+        self.feed_lfo = SinusoidalLFO(base_feed, 0.006, frequency_hz=0.033)  # ~30s period
+
+        # Global speed multiplier (shared with Breath slider)
+        self.lfo_speed = 1.0
+
+    def update(self, dt):
+        self.feed_lfo.update(dt * self.lfo_speed)
+
+    def get_modulated_params(self):
+        return {"feed": self.feed_lfo.get_value()}
+
+    def reset_from_preset(self, preset):
+        self.feed_lfo.base_value = preset.get("feed", 0.037)
+
+    def reset_phase(self):
+        self.feed_lfo.reset()
+
+
 class Viewer:
-    def __init__(self, width=900, height=900, sim_size=1024, start_preset="orbium"):
+    def __init__(self, width=900, height=900, sim_size=1024, start_preset="coral"):
         self.canvas_w = width
         self.canvas_h = height
         self.panel_visible = True
@@ -190,21 +265,21 @@ class Viewer:
 
         # LFO system for Lenia mu/sigma/T modulation (sinusoidal breathing)
         self.lfo_system = None  # Initialized in _apply_preset
+        # LFO system for Gray-Scott feed modulation (breathing)
+        self.gs_lfo_system = None  # Initialized in _apply_preset
 
-        # Smoothed parameter infrastructure (EMA drift for organic control)
+        # Smoothed parameter infrastructure (EMA drift for organic slider control)
         self.smoothed_params = {}  # key -> SmoothedParameter instances
         self.param_coupler = None  # LeniaParameterCoupler (Lenia only)
-        self.survival_guardian = None  # SurvivalGuardian (Lenia only)
-        self.preset_morpher = PresetMorpher(morph_duration=2.5)
-        self._initial_load = True  # Track initial load to avoid morphing on startup
-
-        # High-level character control (calm to energetic)
-        self.character_value = 0.5
 
         # Containment field: soft radial decay to keep patterns centered
         self._containment = self._build_containment(sim_size)
         # Center noise mask: gaussian blob for interior perturbation
         self._noise_mask = self._build_noise_mask(sim_size)
+        # Spatial color offset: radial + angular drives multi-color sweeps
+        self._color_offset = self._build_color_offset(sim_size)
+        # CCA render mask: soft circle to contain on black background
+        self._cca_mask = self._build_cca_mask(sim_size)
 
         # Engine and preset state
         self.preset_key = start_preset
@@ -215,8 +290,8 @@ class Viewer:
         # Control panel (built after pygame.init in run())
         self.panel = None
         self.sliders = {}
-        self.engine_buttons = None
         self.preset_buttons = None
+        self._hue_value = 0.25  # Hue slider state
 
         # Create engine and apply preset
         self._apply_preset(self.preset_key)
@@ -249,6 +324,40 @@ class Viewer:
         dist_sq = ((X - center) ** 2 + (Y - center) ** 2) / (center * center)
         # Gaussian with sigma ~0.3 of the radius
         return (0.003 * np.exp(-dist_sq / (2 * 0.15 ** 2))).astype(np.float64)
+
+    def _build_color_offset(self, size):
+        """Radial + angular color offset for multi-color sweeps.
+
+        Creates broad color variation across the organism:
+        - Radial: center vs edges have different hues
+        - Angular: different sides have different hues
+        Combined with hue_phase rotation, colors continuously sweep around.
+        """
+        center = size / 2.0
+        Y, X = np.ogrid[:size, :size]
+        dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
+        angle = np.arctan2(Y - center, X - center)  # [-pi, pi]
+        # Radial: 0.0 at center -> 0.35 at edges
+        radial = np.clip(dist, 0, 1) * 0.35
+        # Angular: 0.0 -> 0.25 around the circle
+        angular = ((angle / (2.0 * np.pi)) + 0.5) * 0.25
+        return (radial + angular).astype(np.float32)
+
+    def _build_cca_mask(self, size):
+        """Soft circular mask for CCA rendering.
+
+        CCA fills the entire grid by nature. This mask windows the render
+        to a circular region so the organism floats on black background.
+        Smooth squared falloff creates organic edge.
+        """
+        center = size / 2.0
+        Y, X = np.ogrid[:size, :size]
+        dist = np.sqrt((X - center) ** 2 + (Y - center) ** 2) / center
+        # 1.0 inside 35%, smooth fade to 0 by 55%
+        mask = np.clip(1.0 - (dist - 0.35) / 0.20, 0.0, 1.0)
+        # Squared falloff for softer edge
+        mask = mask ** 2
+        return mask.astype(np.float32)
 
     def _scale_R(self, base_R):
         """Scale kernel radius for current sim resolution (Lenia only)."""
@@ -290,6 +399,13 @@ class Viewer:
                 Du=preset.get("Du", 0.2097),
                 Dv=preset.get("Dv", 0.105),
             )
+        elif engine_name == "cca":
+            return cls(
+                size=self.sim_size,
+                range_r=preset.get("range_r", 1),
+                threshold=preset.get("threshold", 1),
+                num_states=preset.get("num_states", 14),
+            )
 
     def _apply_preset(self, key):
         """Apply a preset, creating a new engine if needed."""
@@ -302,35 +418,6 @@ class Viewer:
 
         self.preset_key = key
 
-        # Check if we should morph instead of instant apply
-        should_morph = (not engine_changed and self.engine is not None and not self._initial_load)
-
-        if should_morph:
-            # MORPH PATH: Smooth transition within same engine type
-            # Capture current params and start morphing
-            current_params = self.engine.get_params()
-            self.preset_morpher.start_morph(current_params, preset)
-
-            # Update LFO bases to new preset (they'll drift via smoothing)
-            if self.lfo_system:
-                self.lfo_system.reset_from_preset(preset)
-
-            # Update coupler baseline for new preset
-            if self.param_coupler:
-                self.param_coupler.update_baseline(preset)
-
-            # Update palette if specified
-            if "palette" in preset:
-                self.iridescent.set_palette(preset["palette"])
-
-            # Sync UI
-            self._sync_sliders_from_engine()
-
-            # Mark initial load complete
-            self._initial_load = False
-            return  # Don't seed, don't reset - just morph
-
-        # INSTANT PATH: Engine change or initial load
         self.engine_name = new_engine_name
 
         if engine_changed or self.engine is None:
@@ -353,35 +440,50 @@ class Viewer:
         self.iridescent.reset(self.sim_size)
         self.speed_accumulator = 0.0
 
-        # Set palette from preset if specified
-        if "palette" in preset:
-            self.iridescent.set_palette(preset["palette"])
+        # Set palette from preset (or reset to default)
+        self.iridescent.set_palette(preset.get("palette", "oil_slick"))
 
-        # Create new LFO system from preset (or None for non-Lenia engines)
+        # Create LFO systems from preset (engine-specific)
         self.lfo_system = LeniaLFOSystem(preset) if new_engine_name == "lenia" else None
+        self.gs_lfo_system = GrayScottLFOSystem(preset) if new_engine_name == "gray_scott" else None
+
+        # Hue cycling speed per engine
+        if new_engine_name == "gray_scott":
+            self.iridescent._hue_per_breath = 0.20
+        elif new_engine_name == "cca":
+            # CCA always evolves — faster hue cycling for constant color change
+            self.iridescent._hue_per_breath = 0.12
+        else:
+            self.iridescent._hue_per_breath = 0.08
 
         # Create smoothed parameters for all engine sliders
         self.smoothed_params = {}
         for sdef in self.engine.__class__.get_slider_defs():
-            key = sdef["key"]
+            param_key = sdef["key"]
             params = self.engine.get_params()
             # Vary time constants for organic independence
-            tau = {"mu": 2.0, "sigma": 2.2, "T": 2.5, "R": 2.5}.get(key, 2.0)
-            sp = SmoothedParameter(params.get(key, sdef["default"]), time_constant=tau)
-            self.smoothed_params[key] = sp
+            tau = {"mu": 2.0, "sigma": 2.2, "T": 2.5, "R": 2.5}.get(param_key, 2.0)
+            sp = SmoothedParameter(params.get(param_key, sdef["default"]), time_constant=tau)
+            self.smoothed_params[param_key] = sp
 
-        # Create parameter coupler and survival guardian (Lenia only)
+        # Exclude R from smoothing for Lenia — it's structural (rebuilds FFT kernel)
+        if new_engine_name == "lenia":
+            self.smoothed_params.pop("R", None)
+
+        # Create parameter coupler (Lenia only)
         self.param_coupler = LeniaParameterCoupler(preset) if new_engine_name == "lenia" else None
-        self.survival_guardian = SurvivalGuardian(self.engine) if new_engine_name == "lenia" else None
 
-        # Rebuild panel if engine changed and panel exists
+        # Rebuild panel if engine changed and panel exists (different slider defs)
         if engine_changed and self.panel is not None:
             self._build_panel()
         else:
             self._sync_sliders_from_engine()
 
-        # Mark initial load complete
-        self._initial_load = False
+        # Update preset button highlight
+        if self.preset_buttons and key in UNIFIED_ORDER:
+            self.preset_buttons.selected = UNIFIED_ORDER.index(key)
+            self.preset_buttons._update_active()
+
 
     def _sync_sliders_from_engine(self):
         """Update slider positions to match current engine state."""
@@ -397,12 +499,15 @@ class Viewer:
             self.sliders["speed"].set_value(self.sim_speed)
         if "brush" in self.sliders:
             self.sliders["brush"].set_value(self.brush_radius)
-        if "lfo_speed" in self.sliders and self.lfo_system:
-            self.sliders["lfo_speed"].set_value(self.lfo_system.lfo_speed)
-        # Character slider
-        if "character" in self.sliders:
-            self.sliders["character"].set_value(self.character_value)
-        # Iridescent color sliders
+        if "lfo_speed" in self.sliders:
+            if self.lfo_system:
+                self.sliders["lfo_speed"].set_value(self.lfo_system.lfo_speed)
+            elif self.gs_lfo_system:
+                self.sliders["lfo_speed"].set_value(self.gs_lfo_system.lfo_speed)
+        # Hue slider
+        if "hue" in self.sliders:
+            self.sliders["hue"].set_value(getattr(self, '_hue_value', 0.25))
+        # Iridescent color sliders (in advanced section)
         if "tint_r" in self.sliders:
             self.sliders["tint_r"].set_value(self.iridescent.tint_r)
         if "tint_g" in self.sliders:
@@ -413,150 +518,114 @@ class Viewer:
             self.sliders["brightness"].set_value(self.iridescent.brightness)
 
     def _build_panel(self):
-        """Build the control panel with engine-specific and common widgets."""
+        """Build the OP-1 style control panel with unified presets."""
         panel = ControlPanel(self.canvas_w, 0, PANEL_WIDTH, self.canvas_h)
         self.sliders = {}
 
-        # --- Engine selector ---
-        panel.add_section("ENGINE")
-        engine_labels = [ENGINE_LABELS[e] for e in ENGINE_ORDER]
-        engine_idx = ENGINE_ORDER.index(self.engine_name) if self.engine_name in ENGINE_ORDER else 0
-        self.engine_buttons = panel.add_button_row(
-            engine_labels, selected=engine_idx,
-            on_select=self._on_engine_select
-        )
-
-        # --- Presets for current engine ---
-        panel.add_section("PRESETS")
-        preset_keys = get_presets_for_engine(self.engine_name)
-        preset_names = [PRESETS[k]["name"] for k in preset_keys]
-        preset_idx = preset_keys.index(self.preset_key) if self.preset_key in preset_keys else 0
+        # --- Unified preset buttons (no engine selector) ---
+        panel.add_section("ALGORITHMS")
+        preset_names = [PRESETS[k]["name"] for k in UNIFIED_ORDER]
+        preset_idx = UNIFIED_ORDER.index(self.preset_key) if self.preset_key in UNIFIED_ORDER else 0
         self.preset_buttons = panel.add_button_row(
             preset_names, selected=preset_idx,
             on_select=self._on_preset_select
         )
 
-        # --- Character slider (high-level control for Lenia) ---
-        if self.engine_name == "lenia":
-            panel.add_section("CHARACTER")
-            self.sliders["character"] = panel.add_slider(
-                "Character", 0.0, 1.0, 0.5, fmt=".2f",
-                on_change=self._on_character_change
-            )
-
-        # --- Engine-specific sliders ---
-        current_section = None
-        for sdef in self.engine.__class__.get_slider_defs():
-            section = sdef.get("section", "PARAMETERS")
-            if section != current_section:
-                panel.add_section(section)
-                current_section = section
-            self.sliders[sdef["key"]] = panel.add_slider(
-                sdef["label"], sdef["min"], sdef["max"], sdef["default"],
-                fmt=sdef.get("fmt", ".3f"),
-                step=sdef.get("step"),
-                on_change=self._make_param_callback(sdef["key"])
-            )
-
-        # --- Iridescent Color Controls ---
-        panel.add_section("IRIDESCENT")
-        self.sliders["tint_r"] = panel.add_slider(
-            "Tint R", 0.0, 2.0, self.iridescent.tint_r, fmt=".2f",
-            on_change=lambda v: setattr(self.iridescent, 'tint_r', v)
-        )
-        self.sliders["tint_g"] = panel.add_slider(
-            "Tint G", 0.0, 2.0, self.iridescent.tint_g, fmt=".2f",
-            on_change=lambda v: setattr(self.iridescent, 'tint_g', v)
-        )
-        self.sliders["tint_b"] = panel.add_slider(
-            "Tint B", 0.0, 2.0, self.iridescent.tint_b, fmt=".2f",
-            on_change=lambda v: setattr(self.iridescent, 'tint_b', v)
+        # --- Main controls ---
+        panel.add_section("CONTROLS")
+        self._hue_value = 0.25
+        self.sliders["hue"] = panel.add_slider(
+            "Hue", 0.0, 1.0, self._hue_value, fmt=".2f",
+            on_change=self._on_hue_change
         )
         self.sliders["brightness"] = panel.add_slider(
             "Brightness", 0.1, 3.0, self.iridescent.brightness, fmt=".2f",
             on_change=lambda v: setattr(self.iridescent, 'brightness', v)
         )
-
-        # --- LFO Breathing ---
-        panel.add_section("LFO BREATHING")
-        self.sliders["lfo_speed"] = panel.add_slider(
-            "LFO Speed", 0.0, 3.0, 1.0, fmt=".2f",
-            on_change=self._on_lfo_speed_change
-        )
-
-        # --- Common: Simulation ---
-        panel.add_section("SIMULATION")
         self.sliders["speed"] = panel.add_slider(
             "Speed", 0.95, 5.0, self.sim_speed, fmt=".2f",
             on_change=self._on_speed_change
         )
+        self.sliders["lfo_speed"] = panel.add_slider(
+            "Breath", 0.0, 3.0, 1.0, fmt=".2f",
+            on_change=self._on_lfo_speed_change
+        )
         self.sliders["brush"] = panel.add_slider(
-            "Brush size", 3, 80, self.brush_radius, fmt=".0f", step=1,
+            "Brush", 3, 80, self.brush_radius, fmt=".0f", step=1,
             on_change=lambda v: setattr(self, 'brush_radius', int(v))
         )
 
         # --- Actions ---
-        panel.add_section("ACTIONS")
-        panel.add_button("Reset / Reseed  [R]", on_click=self._on_reset)
         panel.add_spacer(4)
-        panel.add_button("Clear World", on_click=self._on_clear)
+        panel.add_button("Reseed  [R]", on_click=self._on_reset)
+        panel.add_spacer(4)
+        panel.add_button("Clear", on_click=self._on_clear)
         panel.add_spacer(4)
         panel.add_button("Screenshot  [S]", on_click=lambda: self._save_screenshot(None))
+
+        # --- Collapsible Advanced section ---
+        advanced = panel.add_collapsible_section("Advanced", expanded=False)
+
+        # Engine-specific raw params
+        for sdef in self.engine.__class__.get_slider_defs():
+            self.sliders[sdef["key"]] = panel.add_slider_to(
+                advanced, sdef["label"], sdef["min"], sdef["max"], sdef["default"],
+                fmt=sdef.get("fmt", ".3f"),
+                step=sdef.get("step"),
+                on_change=self._make_param_callback(sdef["key"])
+            )
+
+        # Tint RGB sliders
+        self.sliders["tint_r"] = panel.add_slider_to(
+            advanced, "Tint R", 0.0, 2.0, self.iridescent.tint_r, fmt=".2f",
+            on_change=lambda v: setattr(self.iridescent, 'tint_r', v)
+        )
+        self.sliders["tint_g"] = panel.add_slider_to(
+            advanced, "Tint G", 0.0, 2.0, self.iridescent.tint_g, fmt=".2f",
+            on_change=lambda v: setattr(self.iridescent, 'tint_g', v)
+        )
+        self.sliders["tint_b"] = panel.add_slider_to(
+            advanced, "Tint B", 0.0, 2.0, self.iridescent.tint_b, fmt=".2f",
+            on_change=lambda v: setattr(self.iridescent, 'tint_b', v)
+        )
 
         self.panel = panel
         self._sync_sliders_from_engine()
 
     def _make_param_callback(self, key):
-        """Create a callback that updates a single engine parameter."""
+        """Create a callback that updates a single engine parameter.
+
+        For smoothed params (mu, sigma, T): sets EMA target, per-frame code
+        feeds smoothed values into LFO bases and engine.
+        For R and non-smoothed params: sets engine directly.
+        """
         def callback(val):
-            # Set target on smoothed parameter instead of calling engine directly
             if key in self.smoothed_params:
-                # For Lenia mu/sigma: apply coupling before setting targets
+                # Smoothed parameter: set EMA target (per-frame code applies to engine)
                 if self.param_coupler and key in ("mu", "sigma"):
-                    # Get current targets (or current values if not set yet)
+                    # Lenia mu/sigma coupling
                     mu_target = self.smoothed_params["mu"].target if "mu" in self.smoothed_params else val
                     sigma_target = self.smoothed_params["sigma"].target if "sigma" in self.smoothed_params else val
-
-                    # Update the target that changed
                     if key == "mu":
                         mu_target = val
                     else:
                         sigma_target = val
-
-                    # Apply coupling
                     coupled_mu, coupled_sigma = self.param_coupler.couple(mu_target, sigma_target)
-
-                    # Set both targets (coupling affects both)
                     self.smoothed_params["mu"].set_target(coupled_mu)
                     self.smoothed_params["sigma"].set_target(coupled_sigma)
-
-                    # Update LFO bases
-                    if self.lfo_system:
-                        self.lfo_system.mu_lfo.base_value = coupled_mu
-                        self.lfo_system.sigma_lfo.base_value = coupled_sigma
                 else:
-                    # Non-coupled parameter: just set target
                     self.smoothed_params[key].set_target(val)
-
-                    # Update LFO base for T (if applicable)
-                    if self.lfo_system and key == "T":
-                        self.lfo_system.T_lfo.base_value = val
-                        self.lfo_system.T_lfo.amplitude = val * 0.25
+            else:
+                # Non-smoothed parameter (e.g. R for Lenia): set engine directly
+                if key in ("T", "R", "num_states", "threshold"):
+                    self.engine.set_params(**{key: int(val)})
+                else:
+                    self.engine.set_params(**{key: val})
         return callback
 
-    def _on_engine_select(self, idx, name):
-        """Switch to a different engine type."""
-        new_engine = ENGINE_ORDER[idx]
-        if new_engine == self.engine_name:
-            return
-        preset_keys = get_presets_for_engine(new_engine)
-        if preset_keys:
-            self._apply_preset(preset_keys[0])
-
     def _on_preset_select(self, idx, name):
-        preset_keys = get_presets_for_engine(self.engine_name)
-        if idx < len(preset_keys):
-            self._apply_preset(preset_keys[idx])
+        if idx < len(UNIFIED_ORDER):
+            self._apply_preset(UNIFIED_ORDER[idx])
 
     def _on_speed_change(self, val):
         self.sim_speed = val
@@ -565,38 +634,13 @@ class Viewer:
         """Update LFO speed multiplier."""
         if self.lfo_system:
             self.lfo_system.lfo_speed = val
+        if self.gs_lfo_system:
+            self.gs_lfo_system.lfo_speed = val
 
-    def _on_character_change(self, val):
-        """Update character value (calm to energetic)."""
-        self.character_value = val
-
-        # Get preset baseline mu/sigma
-        preset = get_preset(self.preset_key)
-        base_mu = preset.get("mu", 0.15)
-        base_sigma = preset.get("sigma", 0.017)
-
-        # Character 0.5 = baseline. Scale: +/-30% of safe range
-        mu_range = 0.06  # +/-0.06 from baseline
-        sigma_range = 0.012  # +/-0.012 from baseline
-
-        offset = (val - 0.5) * 2.0  # Map [0,1] to [-1,1]
-        target_mu = base_mu + offset * mu_range
-        target_sigma = base_sigma + offset * sigma_range
-
-        # Apply coupling
-        if self.param_coupler:
-            target_mu, target_sigma = self.param_coupler.couple(target_mu, target_sigma)
-
-        # Set SmoothedParameter targets
-        if "mu" in self.smoothed_params:
-            self.smoothed_params["mu"].set_target(target_mu)
-        if "sigma" in self.smoothed_params:
-            self.smoothed_params["sigma"].set_target(target_sigma)
-
-        # Update LFO base values so breathing centers on new character
-        if self.lfo_system:
-            self.lfo_system.mu_lfo.base_value = target_mu
-            self.lfo_system.sigma_lfo.base_value = target_sigma
+    def _on_hue_change(self, val):
+        """Update hue via cosine color wheel."""
+        self._hue_value = val
+        self.iridescent.set_hue_offset(val)
 
     def _on_reset(self):
         preset = get_preset(self.preset_key)
@@ -611,8 +655,6 @@ class Viewer:
             current_params = self.engine.get_params()
             if key in current_params:
                 sp.snap(current_params[key])
-        # Reset character to neutral
-        self.character_value = 0.5
         # Reseed
         seed_kwargs = {}
         if "density" in preset:
@@ -623,8 +665,10 @@ class Viewer:
         # Reset LFO phase (explicit user reseed) and reload base values from preset
         if self.lfo_system:
             self.lfo_system.reset_phase()
-            if self.engine_name == "lenia":
-                self.lfo_system.reset_from_preset(preset)
+            self.lfo_system.reset_from_preset(preset)
+        if self.gs_lfo_system:
+            self.gs_lfo_system.reset_phase()
+            self.gs_lfo_system.reset_from_preset(preset)
         self._sync_sliders_from_engine()
 
     def _on_clear(self):
@@ -638,9 +682,73 @@ class Viewer:
         lfo_phase = None
         if self.lfo_system:
             lfo_phase = self.lfo_system.mu_lfo.phase
-        rgb = self.iridescent.render(self.engine.world, dt, lfo_phase=lfo_phase)
+        elif self.gs_lfo_system:
+            lfo_phase = self.gs_lfo_system.feed_lfo.phase
+
+        if self.engine_name == "gray_scott":
+            # Soft rendering: blur world for organic blobby look,
+            # density-driven color weights, spatial offset for multi-color sweeps
+            world = _blur_world(self.engine.world, sigma=15)
+            rgb = self.iridescent.render(
+                world, dt, lfo_phase=lfo_phase,
+                color_weights=(0.55, 0.20, 0.25),
+                t_offset=self._color_offset,
+            )
+            rgb = self._apply_bloom(rgb, intensity=0.6)
+        elif self.engine_name == "cca":
+            # CCA: mask to circular region on black, heavy blur to remove pixelation
+            world = self.engine.world * self._cca_mask
+            world = _blur_world(world, sigma=28)
+            rgb = self.iridescent.render(
+                world, dt, lfo_phase=lfo_phase,
+                color_weights=(0.35, 0.25, 0.40),
+                t_offset=self._color_offset,
+            )
+            rgb = self._apply_bloom(rgb, intensity=0.4)
+        else:
+            rgb = self.iridescent.render(self.engine.world, dt, lfo_phase=lfo_phase)
+
         surface = pygame.surfarray.make_surface(rgb.swapaxes(0, 1).copy())
         return surface
+
+    def _apply_bloom(self, rgb, sigma=25, intensity=0.5):
+        """Colored glow halo via 8x downsample-blur-upsample additive blend.
+
+        128x128x3 blur is fast (~5ms). The heavy downsample is fine for
+        bloom since the glow is very diffuse by nature.
+        """
+        h, w = rgb.shape[:2]
+        factor = 8
+        small = rgb[::factor, ::factor, :].astype(np.float32)
+        small_sigma = max(1.0, sigma / factor)
+
+        if _scipy_gaussian is not None:
+            glow = _scipy_gaussian(small, [small_sigma, small_sigma, 0])
+        else:
+            # Fallback: box blur each channel
+            glow = np.empty_like(small)
+            r = max(1, int(small_sigma * 0.8))
+            k = 2 * r + 1
+            for c in range(3):
+                ch = small[:, :, c]
+                for _ in range(3):
+                    p = np.pad(ch, ((0, 0), (r, r)), mode='reflect')
+                    cs = np.empty((p.shape[0], p.shape[1] + 1), dtype=np.float32)
+                    cs[:, 0] = 0
+                    np.cumsum(p, axis=1, out=cs[:, 1:])
+                    ch = (cs[:, k:] - cs[:, :-k]) / k
+                    p = np.pad(ch, ((r, r), (0, 0)), mode='reflect')
+                    cs = np.empty((p.shape[0] + 1, p.shape[1]), dtype=np.float32)
+                    cs[0, :] = 0
+                    np.cumsum(p, axis=0, out=cs[1:, :])
+                    ch = (cs[k:, :] - cs[:-k, :]) / k
+                glow[:, :, c] = ch
+
+        glow = np.repeat(np.repeat(glow, factor, axis=0), factor, axis=1)[:h, :w, :]
+
+        result = rgb.astype(np.float32) + glow * intensity
+        np.clip(result, 0, 255, out=result)
+        return result.astype(np.uint8)
 
     def _draw_hud(self, screen, fps):
         if not self.show_hud:
@@ -732,35 +840,45 @@ class Viewer:
             if not (self.panel_visible and pygame.mouse.get_pos()[0] >= self.canvas_w):
                 self._handle_mouse()
 
-            # LFO modulation (always runs, even when paused - it's meditative)
-            if not self.paused and self.lfo_system:
-                self.lfo_system.update(dt)
-                modulated = self.lfo_system.get_modulated_params()
-                # Update smoothed parameter targets with LFO output
-                for key, val in modulated.items():
-                    if key in self.smoothed_params:
-                        self.smoothed_params[key].set_target(val)
+            if not self.paused:
+                # Update smoothed parameters (EMA drift for slider-driven changes)
+                if self.smoothed_params:
+                    for key, sp in self.smoothed_params.items():
+                        sp.update(dt)
 
-            # Preset morphing (smooth transitions between presets)
-            if not self.paused and self.preset_morpher.morphing:
-                morphed = self.preset_morpher.update(dt)
-                if morphed:
-                    # Feed morphed values as targets to SmoothedParameter instances
-                    for key, val in morphed.items():
-                        if key in self.smoothed_params:
-                            self.smoothed_params[key].set_target(val)
-
-            # Update smoothed parameters (EMA drift toward targets)
-            if not self.paused and self.smoothed_params:
-                for key, sp in self.smoothed_params.items():
-                    sp.update(dt)
-                # Apply current smoothed values to engine
-                smoothed_vals = {k: sp.get_value() for k, sp in self.smoothed_params.items()}
-                # Convert integer params
-                for k in ("T", "R", "num_states", "threshold"):
-                    if k in smoothed_vals:
-                        smoothed_vals[k] = int(smoothed_vals[k])
-                self.engine.set_params(**smoothed_vals)
+                # LFO modulation: smoothed bases → LFO → engine (direct, no dampening)
+                if self.lfo_system:
+                    # Lenia: Feed smoothed slider values as LFO base values
+                    if self.smoothed_params:
+                        if "mu" in self.smoothed_params:
+                            self.lfo_system.mu_lfo.base_value = self.smoothed_params["mu"].get_value()
+                        if "sigma" in self.smoothed_params:
+                            self.lfo_system.sigma_lfo.base_value = self.smoothed_params["sigma"].get_value()
+                        if "T" in self.smoothed_params:
+                            base_T = self.smoothed_params["T"].get_value()
+                            self.lfo_system.T_lfo.base_value = base_T
+                            self.lfo_system.T_lfo.amplitude = base_T * 0.25
+                    self.lfo_system.update(dt)
+                    modulated = self.lfo_system.get_modulated_params()
+                    self.engine.set_params(**modulated)
+                elif self.gs_lfo_system:
+                    # Gray-Scott: Feed smoothed feed value as LFO base
+                    if "feed" in self.smoothed_params:
+                        self.gs_lfo_system.feed_lfo.base_value = self.smoothed_params["feed"].get_value()
+                    self.gs_lfo_system.update(dt)
+                    modulated = self.gs_lfo_system.get_modulated_params()
+                    # Apply non-feed smoothed params directly
+                    for k, sp in self.smoothed_params.items():
+                        if k != "feed":
+                            modulated[k] = sp.get_value()
+                    self.engine.set_params(**modulated)
+                elif self.smoothed_params:
+                    # Other engines: apply smoothed values directly
+                    smoothed_vals = {k: sp.get_value() for k, sp in self.smoothed_params.items()}
+                    for k in ("T", "R", "num_states", "threshold"):
+                        if k in smoothed_vals:
+                            smoothed_vals[k] = int(smoothed_vals[k])
+                    self.engine.set_params(**smoothed_vals)
 
             # Simulation with fractional speed accumulator
             if not self.paused:
@@ -773,11 +891,28 @@ class Viewer:
                         # Center noise: tiny perturbations keep interior evolving
                         noise = np.random.randn(self.sim_size, self.sim_size) * self._noise_mask
                         self.engine.world = np.clip(self.engine.world + noise, 0.0, 1.0)
+                    elif self.engine_name == "gray_scott":
+                        # Periodic blob injection: seed small V patches near center
+                        # to keep the pattern constantly evolving (never fully static)
+                        if np.random.random() < 0.03:  # ~3% chance per step
+                            s = self.sim_size
+                            cx = s // 2 + np.random.randint(-s // 5, s // 5)
+                            cy = s // 2 + np.random.randint(-s // 5, s // 5)
+                            self.engine.add_blob(cx, cy, radius=s // 25, value=0.3)
                     self.speed_accumulator -= 1.0
 
-                # Survival guardian: invisible density injection on near-death
-                if self.survival_guardian:
-                    self.survival_guardian.check_and_rescue(dt)
+                # Auto-reseed if organism dies (never go black)
+                if self.engine_name == "lenia":
+                    mass = float(self.engine.world.mean())
+                    if mass < 0.002:
+                        preset = get_preset(self.preset_key)
+                        seed_kwargs = {}
+                        if "density" in preset:
+                            seed_kwargs["density"] = preset["density"]
+                        self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
+                        self.iridescent.reset()
+                        if self.lfo_system:
+                            self.lfo_system.reset_phase()
 
             # Render canvas
             screen.fill(THEME["bg"])
@@ -845,12 +980,11 @@ class Viewer:
                     (self.total_w, self.canvas_h), pygame.RESIZABLE
                 )
 
-        # Preset selection (1-9) within current engine
+        # Preset selection (1-9) from unified order
         elif pygame.K_1 <= key <= pygame.K_9:
             idx = key - pygame.K_1
-            preset_keys = get_presets_for_engine(self.engine_name)
-            if idx < len(preset_keys):
-                self._apply_preset(preset_keys[idx])
+            if idx < len(UNIFIED_ORDER):
+                self._apply_preset(UNIFIED_ORDER[idx])
                 if self.preset_buttons:
                     self.preset_buttons.selected = idx
                     self.preset_buttons._update_active()

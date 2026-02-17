@@ -10,81 +10,78 @@ PRESETS = {
     # =====================================================================
     # LENIA
     # =====================================================================
-    "orbium": {
+    "amoeba": {
         "engine": "lenia",
-        "name": "Orbium",
+        "name": "Lenia Glider",
         "description": "Gliding organism - a classic Lenia 'creature'",
         "R": 13, "T": 10, "mu": 0.15, "sigma": 0.017,
         "kernel_peaks": [0.5], "kernel_widths": [0.15],
         "seed": "random",
     },
-    "geminium": {
-        "engine": "lenia",
-        "name": "Geminium",
-        "description": "Self-replicating pattern that splits and multiplies",
-        "R": 10, "T": 10, "mu": 0.14, "sigma": 0.014,
-        "kernel_peaks": [0.5], "kernel_widths": [0.15],
-        "seed": "blobs",
-    },
-    "scutium": {
-        "engine": "lenia",
-        "name": "Scutium",
-        "description": "Shield-shaped stable structures",
-        "R": 13, "T": 10, "mu": 0.21, "sigma": 0.032,
-        "kernel_peaks": [0.5], "kernel_widths": [0.15],
-        "seed": "random",
-    },
-    "aquarium": {
-        "engine": "lenia",
-        "name": "Aquarium",
-        "description": "Rich ecosystem with diverse interacting structures",
-        "R": 15, "T": 12, "mu": 0.16, "sigma": 0.020,
-        "kernel_peaks": [0.5], "kernel_widths": [0.15],
-        "seed": "blobs",
-    },
-    "mitosis": {
-        "engine": "lenia",
-        "name": "Mitosis",
-        "description": "Blob division - organic cell-splitting behavior",
-        "R": 12, "T": 10, "mu": 0.13, "sigma": 0.013,
-        "kernel_peaks": [0.5], "kernel_widths": [0.12],
-        "seed": "blobs",
-    },
-    "dual_ring": {
-        "engine": "lenia",
-        "name": "Dual Ring",
-        "description": "Two-ring kernel producing complex interference patterns",
-        "R": 18, "T": 12, "mu": 0.18, "sigma": 0.022,
-        "kernel_peaks": [0.33, 0.66], "kernel_widths": [0.12, 0.12],
-        "seed": "random",
-    },
     "coral": {
         "engine": "lenia",
-        "name": "Coral",
-        "description": "Branching growth patterns like coral reefs",
+        "name": "Lenia Branch",
+        "description": "Branching growth patterns",
         "R": 20, "T": 15, "mu": 0.12, "sigma": 0.010,
         "kernel_peaks": [0.5], "kernel_widths": [0.18],
         "seed": "blobs",
     },
-    "cardiac": {
+    "heartbeat": {
         "engine": "lenia",
-        "name": "Cardiac Waves",
-        "description": "Spiral wave excitation similar to cardiac tissue",
+        "name": "Lenia Spiral",
+        "description": "Spiral wave excitation patterns",
         "R": 10, "T": 8, "mu": 0.22, "sigma": 0.035,
         "kernel_peaks": [0.5], "kernel_widths": [0.20],
         "seed": "ring",
     },
-    "primordial": {
+    "jellyfish": {
         "engine": "lenia",
-        "name": "Primordial Soup",
-        "description": "Dense chaotic field that self-organizes over time",
-        "R": 13, "T": 10, "mu": 0.15, "sigma": 0.017,
-        "kernel_peaks": [0.5], "kernel_widths": [0.15],
-        "seed": "dense",
+        "name": "Lenia Pulse",
+        "description": "Thick, pulsing, flowing mass",
+        "R": 22, "T": 12, "mu": 0.22, "sigma": 0.028,
+        "kernel_peaks": [0.5], "kernel_widths": [0.22],
+        "seed": "blobs", "density": 0.7,
+        "palette": "bioluminescent",
+    },
+    "lava_lamp": {
+        "engine": "lenia",
+        "name": "Lenia Blob",
+        "description": "Slow, globular, merging/splitting blobs",
+        "R": 25, "T": 18, "mu": 0.18, "sigma": 0.024,
+        "kernel_peaks": [0.4, 0.8], "kernel_widths": [0.18, 0.12],
+        "seed": "blobs", "density": 0.6,
+        "palette": "deep_coral",
+    },
+    "nebula": {
+        "engine": "lenia",
+        "name": "Lenia Cloud",
+        "description": "Multi-scale cloud-like interference",
+        "R": 20, "T": 12, "mu": 0.16, "sigma": 0.020,
+        "kernel_peaks": [0.3, 0.6, 0.9], "kernel_widths": [0.15, 0.12, 0.10],
+        "seed": "random", "density": 0.4,
+        "palette": "oil_slick",
+    },
+    "tide_pool": {
+        "engine": "lenia",
+        "name": "Lenia Wave",
+        "description": "Sweeping wave-like patterns",
+        "R": 18, "T": 10, "mu": 0.20, "sigma": 0.032,
+        "kernel_peaks": [0.5], "kernel_widths": [0.20],
+        "seed": "ring",
+        "palette": "cuttlefish",
+    },
+    "mycelium": {
+        "engine": "lenia",
+        "name": "Lenia Thread",
+        "description": "Thin branching networks",
+        "R": 28, "T": 15, "mu": 0.11, "sigma": 0.008,
+        "kernel_peaks": [0.5], "kernel_widths": [0.22],
+        "seed": "blobs",
+        "palette": "oil_slick",
     },
 
     # =====================================================================
-    # GAME OF LIFE
+    # GAME OF LIFE (kept in code, not shown in UI)
     # =====================================================================
     "classic_life": {
         "engine": "life",
@@ -123,7 +120,7 @@ PRESETS = {
     },
 
     # =====================================================================
-    # EXCITABLE MEDIA
+    # EXCITABLE MEDIA (kept in code, not shown in UI)
     # =====================================================================
     "spiral": {
         "engine": "excitable",
@@ -150,49 +147,102 @@ PRESETS = {
     # =====================================================================
     # GRAY-SCOTT REACTION-DIFFUSION
     # =====================================================================
-    "gs_mitosis": {
+    "reef": {
         "engine": "gray_scott",
-        "name": "Mitosis",
-        "description": "Spots that grow and split like dividing cells",
-        "feed": 0.028, "kill": 0.062, "Du": 0.2097, "Dv": 0.105,
+        "name": "GS Spots",
+        "description": "Holes and short tendrils in a contained blob",
+        "feed": 0.037, "kill": 0.060, "Du": 0.21, "Dv": 0.105,
         "seed": "center",
     },
-    "gs_coral": {
+    "deep_sea": {
         "engine": "gray_scott",
-        "name": "Coral Growth",
-        "description": "Branching coral-like patterns from reaction front",
-        "feed": 0.060, "kill": 0.062, "Du": 0.2097, "Dv": 0.105,
+        "name": "GS Dense",
+        "description": "Dense holes with thick body, slow undulation",
+        "feed": 0.034, "kill": 0.063, "Du": 0.21, "Dv": 0.11,
         "seed": "center",
     },
-    "gs_maze": {
+    "medusa": {
         "engine": "gray_scott",
-        "name": "Labyrinth",
-        "description": "Labyrinthine stripe patterns fill the space",
-        "feed": 0.029, "kill": 0.057, "Du": 0.2097, "Dv": 0.105,
+        "name": "GS Worms",
+        "description": "Sprawling long tendrils reaching outward",
+        "feed": 0.022, "kill": 0.056, "Du": 0.20, "Dv": 0.13,
         "seed": "center",
     },
-    "gs_spots": {
+    "labyrinth": {
         "engine": "gray_scott",
-        "name": "Turing Spots",
-        "description": "Stable Turing spots - leopard-print pattern",
-        "feed": 0.035, "kill": 0.065, "Du": 0.2097, "Dv": 0.105,
-        "seed": "multi",
+        "name": "GS Maze",
+        "description": "Maze-like winding patterns in a contained blob",
+        "feed": 0.029, "kill": 0.057, "Du": 0.21, "Dv": 0.105,
+        "seed": "center",
     },
-    "gs_worms": {
+    "tentacles": {
         "engine": "gray_scott",
-        "name": "Worms",
-        "description": "Worm-like structures that crawl and branch",
-        "feed": 0.078, "kill": 0.061, "Du": 0.2097, "Dv": 0.105,
-        "seed": "multi",
+        "name": "GS Solitons",
+        "description": "Elongated soliton structures that crawl and branch",
+        "feed": 0.026, "kill": 0.059, "Du": 0.21, "Dv": 0.12,
+        "seed": "center",
+    },
+
+    # =====================================================================
+    # CYCLIC CELLULAR AUTOMATA (never reaches equilibrium)
+    # =====================================================================
+    "whirlpool": {
+        "engine": "cca",
+        "name": "CCA Spiral",
+        "description": "Classic spiraling vortices that never settle",
+        "range_r": 1, "threshold": 1, "num_states": 14,
+        "seed": "random",
+    },
+    "magma": {
+        "engine": "cca",
+        "name": "CCA Thick",
+        "description": "Thick flowing wave fronts with turbulent mixing",
+        "range_r": 2, "threshold": 3, "num_states": 18,
+        "seed": "random",
+        "palette": "deep_coral",
+    },
+    "aurora": {
+        "engine": "cca",
+        "name": "CCA Fine",
+        "description": "Fine delicate spirals with many color bands",
+        "range_r": 1, "threshold": 1, "num_states": 20,
+        "seed": "random",
+        "palette": "bioluminescent",
+    },
+    "vortex": {
+        "engine": "cca",
+        "name": "CCA Chaotic",
+        "description": "Turbulent swirling patterns that constantly shift",
+        "range_r": 2, "threshold": 2, "num_states": 12,
+        "seed": "random",
+    },
+    "storm": {
+        "engine": "cca",
+        "name": "CCA Waves",
+        "description": "Large-scale rolling fronts with deep structure",
+        "range_r": 3, "threshold": 5, "num_states": 16,
+        "seed": "random",
+        "palette": "cuttlefish",
     },
 }
 
 
-# Preset ordering grouped by engine
+# Unified preset order — shown in UI, number keys 1-9 map here
+UNIFIED_ORDER = [
+    # Lenia
+    "coral", "amoeba", "jellyfish", "lava_lamp", "nebula",
+    "tide_pool", "mycelium", "heartbeat",
+    # Gray-Scott
+    "reef", "deep_sea", "medusa", "labyrinth", "tentacles",
+    # Cyclic CA
+    "whirlpool", "magma", "aurora", "vortex", "storm",
+]
+
+# Legacy per-engine ordering (kept for compatibility)
 PRESET_ORDERS = {
     "lenia": [
-        "orbium", "geminium", "scutium", "aquarium", "mitosis",
-        "dual_ring", "coral", "cardiac", "primordial",
+        "amoeba", "coral", "heartbeat", "jellyfish", "lava_lamp",
+        "nebula", "tide_pool", "mycelium",
     ],
     "life": [
         "classic_life", "highlife", "day_night", "diamoeba", "seeds",
@@ -201,16 +251,21 @@ PRESET_ORDERS = {
         "spiral", "turbulent", "target",
     ],
     "gray_scott": [
-        "gs_mitosis", "gs_coral", "gs_maze", "gs_spots", "gs_worms",
+        "reef", "deep_sea", "medusa", "labyrinth", "tentacles",
+    ],
+    "cca": [
+        "whirlpool", "magma", "aurora", "vortex", "storm",
     ],
 }
 
 # Flat list of all presets (for CLI compatibility)
-PRESET_ORDER = []
+PRESET_ORDER = list(UNIFIED_ORDER)  # Start with unified order
 for _keys in PRESET_ORDERS.values():
-    PRESET_ORDER.extend(_keys)
+    for _k in _keys:
+        if _k not in PRESET_ORDER:
+            PRESET_ORDER.append(_k)
 
-ENGINE_ORDER = ["lenia", "life", "excitable", "gray_scott"]
+ENGINE_ORDER = ["lenia", "life", "excitable", "gray_scott", "cca"]
 
 
 def get_preset(name):
@@ -231,4 +286,4 @@ def list_presets(engine=None):
     else:
         keys = PRESET_ORDER
     return [(k, PRESETS[k]["name"], PRESETS[k]["description"])
-            for k in keys]
+            for k in keys if k in PRESETS]

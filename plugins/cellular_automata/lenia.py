@@ -142,48 +142,60 @@ class Lenia(CAEngine):
             self.seed_random(**kwargs)
 
     def seed_random(self, density=0.5, radius=None):
-        """Seed a circular region with random values."""
+        """Seed a circular region with gaussian-falloff random values."""
         if radius is None:
             radius = self.size // 4
         self.world[:] = 0
         cy, cx = self.size // 2, self.size // 2
         Y, X = np.ogrid[:self.size, :self.size]
         dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
-        mask = dist < radius
-        self.world[mask] = np.random.random(mask.sum()) * density
+        # Smooth gaussian envelope instead of hard circle
+        envelope = np.exp(-0.5 * (dist / (radius * 0.6)) ** 2)
+        noise = np.random.random((self.size, self.size)) * density
+        self.world = noise * envelope
+        np.clip(self.world, 0, 1, out=self.world)
         self.generation = 0
 
     def seed_multiple_blobs(self, n_blobs=8, blob_radius=None, density=0.6):
-        """Seed with multiple random circular blobs."""
+        """Seed with overlapping gaussian blobs clustered near center."""
         if blob_radius is None:
-            blob_radius = self.size // 12
+            blob_radius = self.size // 10
         self.world[:] = 0
-        margin = blob_radius + 10
+        center = self.size // 2
+        # Scatter radius — blobs stay within central 40% of frame
+        scatter = self.size * 0.2
         Y, X = np.ogrid[:self.size, :self.size]
         for _ in range(n_blobs):
-            cy = np.random.randint(margin, self.size - margin)
-            cx = np.random.randint(margin, self.size - margin)
-            dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
-            mask = dist < blob_radius
-            self.world[mask] = np.clip(
-                self.world[mask] + np.random.random(mask.sum()) * density,
-                0, 1
-            )
+            # Center-biased placement (gaussian scatter)
+            cy = int(center + np.random.randn() * scatter)
+            cx = int(center + np.random.randn() * scatter)
+            cy = max(blob_radius, min(self.size - blob_radius, cy))
+            cx = max(blob_radius, min(self.size - blob_radius, cx))
+            dist = np.sqrt((X - cx)**2 + (Y - cy)**2).astype(np.float64)
+            # Smooth gaussian blob — no hard edge
+            blob = np.exp(-0.5 * (dist / (blob_radius * 0.5)) ** 2) * density
+            # Add noise texture within the blob
+            noise = np.random.random((self.size, self.size)) * 0.4 + 0.6
+            self.world += blob * noise
+        np.clip(self.world, 0, 1, out=self.world)
         self.generation = 0
 
-    def seed_ring(self, radius=None, thickness=10, value=0.8):
-        """Seed with a ring pattern - great for producing spiral waves."""
+    def seed_ring(self, radius=None, thickness=None, value=0.8):
+        """Seed with a smooth ring pattern - great for producing spiral waves."""
         if radius is None:
             radius = self.size // 5
+        if thickness is None:
+            thickness = max(10, self.size // 50)
         self.world[:] = 0
         cy, cx = self.size // 2, self.size // 2
         Y, X = np.ogrid[:self.size, :self.size]
-        dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
-        mask = (dist > radius - thickness) & (dist < radius + thickness)
-        self.world[mask] = value
-        # Add some noise to break symmetry
-        self.world[mask] += np.random.random(mask.sum()) * 0.2 - 0.1
-        self.world = np.clip(self.world, 0, 1)
+        dist = np.sqrt((X - cx)**2 + (Y - cy)**2).astype(np.float64)
+        # Smooth ring profile — gaussian cross-section
+        ring = np.exp(-0.5 * ((dist - radius) / thickness) ** 2) * value
+        # Add noise to break symmetry
+        noise = np.random.random((self.size, self.size)) * 0.2 + 0.8
+        self.world = ring * noise
+        np.clip(self.world, 0, 1, out=self.world)
         self.generation = 0
 
     @classmethod

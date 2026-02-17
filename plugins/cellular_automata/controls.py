@@ -278,6 +278,71 @@ class SectionHeader:
         surface.blit(title_surf, (self.x + 8, self.y + 12))
 
 
+class CollapsibleSection:
+    """Collapsible section with a clickable header that toggles child visibility."""
+
+    def __init__(self, x, y, width, title, expanded=False):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.title = title
+        self.expanded = expanded
+        self.header_height = 24
+        self.children = []
+        self._total_children_height = 0
+
+    @property
+    def height(self):
+        if self.expanded:
+            return self.header_height + self._total_children_height
+        return self.header_height
+
+    def add_child(self, widget):
+        self.children.append(widget)
+        # Track total height of children
+        h = getattr(widget, 'height', 0)
+        if isinstance(widget, Slider):
+            h = widget.height + 6
+        elif isinstance(widget, ButtonRow):
+            h = widget.total_height + 8
+        elif isinstance(widget, SectionHeader):
+            h = widget.height + 4
+        self._total_children_height += h
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+            # Check header click
+            if (self.x <= mx <= self.x + self.width and
+                    self.y <= my <= self.y + self.header_height):
+                self.expanded = not self.expanded
+                return True
+
+        # Forward events to children only when expanded
+        if self.expanded:
+            for child in self.children:
+                if hasattr(child, 'handle_event'):
+                    if child.handle_event(event):
+                        return True
+        return False
+
+    def draw(self, surface, font):
+        # Draw header with toggle indicator
+        arrow = "v " if self.expanded else "> "
+        header_text = arrow + self.title
+        # Divider line
+        pygame.draw.line(surface, THEME["divider"],
+                         (self.x + 8, self.y + 8),
+                         (self.x + self.width - 8, self.y + 8))
+        title_surf = font.render(header_text, True, THEME["text_dim"])
+        surface.blit(title_surf, (self.x + 8, self.y + 12))
+
+        # Draw children only when expanded
+        if self.expanded:
+            for child in self.children:
+                child.draw(surface, font)
+
+
 class ControlPanel:
     """
     Side panel containing all controls.
@@ -329,6 +394,22 @@ class ControlPanel:
         self.widgets.append(btn)
         self._cursor_y += 36
         return btn
+
+    def add_collapsible_section(self, title, expanded=False):
+        """Add a collapsible section. Returns it so caller can add children."""
+        section = CollapsibleSection(0, self._cursor_y, self.width, title, expanded)
+        self.widgets.append(section)
+        self._cursor_y += section.header_height
+        return section
+
+    def add_slider_to(self, section, label, min_val, max_val, value, fmt=".3f",
+                      step=None, on_change=None):
+        """Add a slider as a child of a collapsible section."""
+        slider = Slider(0, self._cursor_y, self.width, label,
+                        min_val, max_val, value, fmt, step, on_change)
+        section.add_child(slider)
+        self._cursor_y += slider.height + 6
+        return slider
 
     def add_spacer(self, height=8):
         self._cursor_y += height

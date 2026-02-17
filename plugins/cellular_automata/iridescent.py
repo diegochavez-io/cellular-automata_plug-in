@@ -141,7 +141,7 @@ class IridescentPipeline:
 
         # Smoothed max normalization (anti-strobe)
         edge_max = max(self.edge_buffer.max(), 0.001)
-        self._edge_max_smooth = max(edge_max, self._edge_max_smooth * 0.97)
+        self._edge_max_smooth = max(edge_max, self._edge_max_smooth * 0.995)
         self.edge_buffer /= self._edge_max_smooth
 
         # Velocity (temporal change)
@@ -149,7 +149,7 @@ class IridescentPipeline:
             np.subtract(world, self.prev_world, out=self.vel_buffer)
             np.abs(self.vel_buffer, out=self.vel_buffer)
             vel_max = max(self.vel_buffer.max(), 0.001)
-            self._vel_max_smooth = max(vel_max, self._vel_max_smooth * 0.97)
+            self._vel_max_smooth = max(vel_max, self._vel_max_smooth * 0.995)
             self.vel_buffer /= self._vel_max_smooth
         else:
             self.vel_buffer[:] = 0.0
@@ -162,16 +162,17 @@ class IridescentPipeline:
 
         return self.edge_buffer, self.vel_buffer
 
-    def compute_color_parameter(self, world, edges, velocity):
+    def compute_color_parameter(self, world, edges, velocity,
+                                w_density=0.25, w_velocity=0.30, w_edges=0.45):
         """Map simulation state to gradient parameter t in [0, 1]."""
         density_max = max(world.max(), 0.001)
-        self._density_max_smooth = max(density_max, self._density_max_smooth * 0.97)
+        self._density_max_smooth = max(density_max, self._density_max_smooth * 0.995)
 
         # Weighted combination — in-place ops, vel_buffer as scratch
-        np.multiply(world, 0.25 / self._density_max_smooth, out=self.t_buffer)
-        self.vel_buffer *= 0.30  # scale velocity in-place (consumed)
+        np.multiply(world, w_density / self._density_max_smooth, out=self.t_buffer)
+        self.vel_buffer *= w_velocity  # scale velocity in-place (consumed)
         self.t_buffer += self.vel_buffer
-        np.multiply(edges, 0.45, out=self.vel_buffer)  # reuse as scratch
+        np.multiply(edges, w_edges, out=self.vel_buffer)  # reuse as scratch
         self.t_buffer += self.vel_buffer
         self.t_buffer %= 1.0
         return self.t_buffer
@@ -197,13 +198,16 @@ class IridescentPipeline:
             self.hue_phase += self.hue_speed * dt * 60.0
             self.hue_phase %= 1.0
 
-    def render(self, world, dt, lfo_phase=None):
+    def render(self, world, dt, lfo_phase=None, color_weights=None, t_offset=None):
         """Main rendering entry point.
 
         Args:
             world: Simulation state array (H, W)
             dt: Delta time in seconds
             lfo_phase: Optional LFO phase [0, 2*pi] for breath-locked color
+            color_weights: Optional (w_density, w_velocity, w_edges) tuple
+            t_offset: Optional (H, W) float32 array added to color parameter
+                for spatial color variation (radial/angular sweeps)
 
         Returns:
             RGB image (H, W, 3) as uint8 array
@@ -212,7 +216,15 @@ class IridescentPipeline:
         edges, velocity = self.compute_signals(world)
 
         # 2. Map to color parameter
-        t = self.compute_color_parameter(world, edges, velocity)
+        if color_weights:
+            t = self.compute_color_parameter(world, edges, velocity, *color_weights)
+        else:
+            t = self.compute_color_parameter(world, edges, velocity)
+
+        # 2b. Spatial color offset for broad multi-color sweeps
+        if t_offset is not None:
+            self.t_buffer += t_offset
+            self.t_buffer %= 1.0
 
         # 3. Advance hue locked to LFO breathing
         self._advance_hue_lfo(lfo_phase, dt)
@@ -261,6 +273,17 @@ class IridescentPipeline:
             self.display_buffer[speck_mask] = pixels.astype(np.uint8)
 
         return self.display_buffer
+
+    def set_hue_offset(self, hue):
+        """Map single 0-1 hue value to RGB tint via cosine color wheel.
+
+        0.0=warm reds, 0.33=greens, 0.67=cool blues, 1.0=warm again.
+        LUT gets rebuilt on next render via property setters.
+        """
+        import math
+        self.tint_r = 1.0 + 0.5 * math.cos(2 * math.pi * hue)
+        self.tint_g = 1.0 + 0.5 * math.cos(2 * math.pi * (hue - 0.333))
+        self.tint_b = 1.0 + 0.5 * math.cos(2 * math.pi * (hue - 0.667))
 
     def reset(self, size=None):
         """Reset pipeline state (on engine change or reseed)."""

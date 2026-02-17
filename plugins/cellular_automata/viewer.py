@@ -36,7 +36,7 @@ from .presets import (
     get_preset, get_presets_for_engine,
 )
 from .controls import ControlPanel, THEME
-from .smoothing import SmoothedParameter, LeniaParameterCoupler, SurvivalGuardian
+from .smoothing import SmoothedParameter, LeniaParameterCoupler, SurvivalGuardian, PresetMorpher
 
 
 PANEL_WIDTH = 300
@@ -195,6 +195,8 @@ class Viewer:
         self.smoothed_params = {}  # key -> SmoothedParameter instances
         self.param_coupler = None  # LeniaParameterCoupler (Lenia only)
         self.survival_guardian = None  # SurvivalGuardian (Lenia only)
+        self.preset_morpher = PresetMorpher(morph_duration=2.5)
+        self._initial_load = True  # Track initial load to avoid morphing on startup
 
         # Containment field: soft radial decay to keep patterns centered
         self._containment = self._build_containment(sim_size)
@@ -296,6 +298,36 @@ class Viewer:
         engine_changed = new_engine_name != self.engine_name
 
         self.preset_key = key
+
+        # Check if we should morph instead of instant apply
+        should_morph = (not engine_changed and self.engine is not None and not self._initial_load)
+
+        if should_morph:
+            # MORPH PATH: Smooth transition within same engine type
+            # Capture current params and start morphing
+            current_params = self.engine.get_params()
+            self.preset_morpher.start_morph(current_params, preset)
+
+            # Update LFO bases to new preset (they'll drift via smoothing)
+            if self.lfo_system:
+                self.lfo_system.reset_from_preset(preset)
+
+            # Update coupler baseline for new preset
+            if self.param_coupler:
+                self.param_coupler.update_baseline(preset)
+
+            # Update palette if specified
+            if "palette" in preset:
+                self.iridescent.set_palette(preset["palette"])
+
+            # Sync UI
+            self._sync_sliders_from_engine()
+
+            # Mark initial load complete
+            self._initial_load = False
+            return  # Don't seed, don't reset - just morph
+
+        # INSTANT PATH: Engine change or initial load
         self.engine_name = new_engine_name
 
         if engine_changed or self.engine is None:
@@ -344,6 +376,9 @@ class Viewer:
             self._build_panel()
         else:
             self._sync_sliders_from_engine()
+
+        # Mark initial load complete
+        self._initial_load = False
 
     def _sync_sliders_from_engine(self):
         """Update slider positions to match current engine state."""
@@ -657,6 +692,15 @@ class Viewer:
                 for key, val in modulated.items():
                     if key in self.smoothed_params:
                         self.smoothed_params[key].set_target(val)
+
+            # Preset morphing (smooth transitions between presets)
+            if not self.paused and self.preset_morpher.morphing:
+                morphed = self.preset_morpher.update(dt)
+                if morphed:
+                    # Feed morphed values as targets to SmoothedParameter instances
+                    for key, val in morphed.items():
+                        if key in self.smoothed_params:
+                            self.smoothed_params[key].set_target(val)
 
             # Update smoothed parameters (EMA drift toward targets)
             if not self.paused and self.smoothed_params:

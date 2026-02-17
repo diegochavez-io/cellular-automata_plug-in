@@ -221,3 +221,49 @@ class SurvivalGuardian:
             return True
 
         return False
+
+
+class PresetMorpher:
+    """Smooth transition between presets without reseeding."""
+
+    def __init__(self, morph_duration=2.5):
+        self.morph_duration = morph_duration
+        self.morphing = False
+        self.morph_progress = 0.0
+        self.source_params = {}
+        self.target_params = {}
+
+    def start_morph(self, current_params, target_preset):
+        """Begin morphing from current params to target preset."""
+        self.source_params = current_params.copy()
+        # Filter out non-numeric preset keys
+        self.target_params = {
+            k: v for k, v in target_preset.items()
+            if k not in ("engine", "name", "description", "seed", "density", "palette")
+            and isinstance(v, (int, float))
+        }
+        self.morphing = True
+        self.morph_progress = 0.0
+
+    def update(self, dt):
+        """Advance morph. Returns dict of interpolated params, or None if not morphing."""
+        if not self.morphing:
+            return None
+        self.morph_progress += dt / self.morph_duration
+        if self.morph_progress >= 1.0:
+            self.morphing = False
+            return self.target_params.copy()
+        # Smoothstep cubic for organic feel
+        t = self.morph_progress
+        smooth_t = t * t * (3.0 - 2.0 * t)
+        morphed = {}
+        for key in self.target_params:
+            src = self.source_params.get(key, self.target_params[key])
+            tgt = self.target_params[key]
+            if isinstance(tgt, (int, float)):
+                morphed[key] = src + (tgt - src) * smooth_t
+        return morphed
+
+    def cancel(self):
+        """Cancel active morph."""
+        self.morphing = False

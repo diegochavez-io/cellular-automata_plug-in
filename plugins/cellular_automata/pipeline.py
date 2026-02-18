@@ -8,6 +8,7 @@ Uses BasePipelineConfig + Pipeline ABC when Scope's formal API is available
 (PLUG-02, PLUG-03). Falls back to plain class for local dev without Scope.
 """
 
+import enum
 import time
 import torch
 import numpy as np
@@ -26,6 +27,37 @@ _PRESET_CHOICES = [
     # Gray-Scott presets
     "reef", "deep_sea", "medusa", "labyrinth", "tentacles",
 ]
+
+
+class PresetEnum(str, enum.Enum):
+    """All headless-safe CA presets. Scope renders enum fields as dropdowns."""
+    # Lenia
+    amoeba = "amoeba"
+    coral = "coral"
+    heartbeat = "heartbeat"
+    jellyfish = "jellyfish"
+    lava_lamp = "lava_lamp"
+    nebula = "nebula"
+    tide_pool = "tide_pool"
+    mycelium = "mycelium"
+    # SmoothLife
+    sl_gliders = "sl_gliders"
+    sl_worms = "sl_worms"
+    sl_elastic = "sl_elastic"
+    sl_pulse = "sl_pulse"
+    sl_chaos = "sl_chaos"
+    # MNCA
+    mnca_soliton = "mnca_soliton"
+    mnca_mitosis = "mnca_mitosis"
+    mnca_worm = "mnca_worm"
+    mnca_hunt = "mnca_hunt"
+    mnca_coral = "mnca_coral"
+    # Gray-Scott
+    reef = "reef"
+    deep_sea = "deep_sea"
+    medusa = "medusa"
+    labyrinth = "labyrinth"
+    tentacles = "tentacles"
 
 
 # ── Shared __init__ and __call__ logic (used by both API branches) ────────
@@ -56,12 +88,14 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     Args:
         prompt: Ignored (text-only pipeline, no prompt needed).
         **kwargs: Runtime parameters from Scope UI:
-            preset (str): CA preset key
+            preset (PresetEnum|str): CA preset key
             speed (float): Simulation speed multiplier
             hue (float): Hue offset 0-1
             brightness (float): Brightness multiplier
             thickness (float): Line dilation thickness
             reseed (bool): Trigger new organism seed
+            flow_radial..flow_vertical (float): Flow field strengths -1 to 1
+            tint_r, tint_g, tint_b (float): RGB tint multipliers 0-2
 
     Returns:
         {"video": tensor} where tensor is (1, H, W, 3) float32 [0,1]
@@ -79,7 +113,24 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     thickness = kwargs.get("thickness", 0.0)
     reseed = kwargs.get("reseed", False)
 
+    # Flow field strengths (-1 to 1)
+    flow_radial = kwargs.get("flow_radial", 0.0)
+    flow_rotate = kwargs.get("flow_rotate", 0.0)
+    flow_swirl = kwargs.get("flow_swirl", 0.0)
+    flow_bubble = kwargs.get("flow_bubble", 0.0)
+    flow_ring = kwargs.get("flow_ring", 0.0)
+    flow_vortex = kwargs.get("flow_vortex", 0.0)
+    flow_vertical = kwargs.get("flow_vertical", 0.0)
+
+    # Tint RGB multipliers (applied after hue sets base tint)
+    tint_r = kwargs.get("tint_r", 1.0)
+    tint_g = kwargs.get("tint_g", 1.0)
+    tint_b = kwargs.get("tint_b", 1.0)
+
     # --- Preset change detection ---
+    # Handle both PresetEnum and raw string values
+    if preset is not None:
+        preset = getattr(preset, 'value', preset)
     if preset is not None and preset != self.simulator.preset_key:
         self.simulator.apply_preset(preset)
         # Re-warmup for new engine (apply_preset skips warmup when
@@ -93,7 +144,19 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
         brightness=brightness,
         thickness=thickness,
         reseed=reseed,
+        flow_radial=flow_radial,
+        flow_rotate=flow_rotate,
+        flow_swirl=flow_swirl,
+        flow_bubble=flow_bubble,
+        flow_ring=flow_ring,
+        flow_vortex=flow_vortex,
+        flow_vertical=flow_vertical,
     )
+
+    # --- Tint: multiply on top of hue-derived tint (1.0 = no change) ---
+    self.simulator.iridescent.tint_r *= tint_r
+    self.simulator.iridescent.tint_g *= tint_g
+    self.simulator.iridescent.tint_b *= tint_b
 
     # --- Wall-clock dt for LFO accuracy (PLUG-06) ---
     now = time.perf_counter()
@@ -149,8 +212,8 @@ if _HAS_SCOPE_API:
             ),
         )
         # Runtime
-        preset: str = Field(
-            default="coral",
+        preset: PresetEnum = Field(
+            default=PresetEnum.coral,
             description="CA preset to run",
             json_schema_extra=ui_field_config(order=1, label="Preset"),
         )
@@ -173,6 +236,48 @@ if _HAS_SCOPE_API:
         reseed: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(order=6, label="Reseed"),
+        )
+        # Flow field strengths
+        flow_radial: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=10, label="Flow Radial"),
+        )
+        flow_rotate: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=11, label="Flow Rotate"),
+        )
+        flow_swirl: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=12, label="Flow Swirl"),
+        )
+        flow_bubble: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=13, label="Flow Bubble"),
+        )
+        flow_ring: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=14, label="Flow Ring"),
+        )
+        flow_vortex: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=15, label="Flow Vortex"),
+        )
+        flow_vertical: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=16, label="Flow Vertical"),
+        )
+        # Tint RGB multipliers
+        tint_r: float = Field(
+            default=1.0, ge=0.0, le=2.0,
+            json_schema_extra=ui_field_config(order=20, label="Tint R"),
+        )
+        tint_g: float = Field(
+            default=1.0, ge=0.0, le=2.0,
+            json_schema_extra=ui_field_config(order=21, label="Tint G"),
+        )
+        tint_b: float = Field(
+            default=1.0, ge=0.0, le=2.0,
+            json_schema_extra=ui_field_config(order=22, label="Tint B"),
         )
 
     from scope.core.pipelines.interface import Requirements as _Requirements
@@ -213,8 +318,8 @@ if _HAS_SCOPE_API:
                 order=1, label="Sim Resolution", is_load_param=True,
             ),
         )
-        preset: str = Field(
-            default="coral",
+        preset: PresetEnum = Field(
+            default=PresetEnum.coral,
             description="CA preset to run",
             json_schema_extra=ui_field_config(order=1, label="Preset"),
         )
@@ -237,6 +342,48 @@ if _HAS_SCOPE_API:
         reseed: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(order=6, label="Reseed"),
+        )
+        # Flow field strengths
+        flow_radial: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=10, label="Flow Radial"),
+        )
+        flow_rotate: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=11, label="Flow Rotate"),
+        )
+        flow_swirl: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=12, label="Flow Swirl"),
+        )
+        flow_bubble: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=13, label="Flow Bubble"),
+        )
+        flow_ring: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=14, label="Flow Ring"),
+        )
+        flow_vortex: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=15, label="Flow Vortex"),
+        )
+        flow_vertical: float = Field(
+            default=0.0, ge=-1.0, le=1.0,
+            json_schema_extra=ui_field_config(order=16, label="Flow Vertical"),
+        )
+        # Tint RGB multipliers
+        tint_r: float = Field(
+            default=1.0, ge=0.0, le=2.0,
+            json_schema_extra=ui_field_config(order=20, label="Tint R"),
+        )
+        tint_g: float = Field(
+            default=1.0, ge=0.0, le=2.0,
+            json_schema_extra=ui_field_config(order=21, label="Tint G"),
+        )
+        tint_b: float = Field(
+            default=1.0, ge=0.0, le=2.0,
+            json_schema_extra=ui_field_config(order=22, label="Tint B"),
         )
 
     class CAPreviewPipeline(Pipeline):
@@ -320,5 +467,47 @@ else:
                     "panel": "controls",
                     "label": "Reseed",
                     "type": "toggle",
+                },
+                # Flow field strengths
+                "flow_radial": {
+                    "order": 10, "panel": "controls", "label": "Flow Radial",
+                    "min": -1.0, "max": 1.0, "step": 0.05,
+                },
+                "flow_rotate": {
+                    "order": 11, "panel": "controls", "label": "Flow Rotate",
+                    "min": -1.0, "max": 1.0, "step": 0.05,
+                },
+                "flow_swirl": {
+                    "order": 12, "panel": "controls", "label": "Flow Swirl",
+                    "min": -1.0, "max": 1.0, "step": 0.05,
+                },
+                "flow_bubble": {
+                    "order": 13, "panel": "controls", "label": "Flow Bubble",
+                    "min": -1.0, "max": 1.0, "step": 0.05,
+                },
+                "flow_ring": {
+                    "order": 14, "panel": "controls", "label": "Flow Ring",
+                    "min": -1.0, "max": 1.0, "step": 0.05,
+                },
+                "flow_vortex": {
+                    "order": 15, "panel": "controls", "label": "Flow Vortex",
+                    "min": -1.0, "max": 1.0, "step": 0.05,
+                },
+                "flow_vertical": {
+                    "order": 16, "panel": "controls", "label": "Flow Vertical",
+                    "min": -1.0, "max": 1.0, "step": 0.05,
+                },
+                # Tint RGB multipliers
+                "tint_r": {
+                    "order": 20, "panel": "controls", "label": "Tint R",
+                    "min": 0.0, "max": 2.0, "step": 0.05,
+                },
+                "tint_g": {
+                    "order": 21, "panel": "controls", "label": "Tint G",
+                    "min": 0.0, "max": 2.0, "step": 0.05,
+                },
+                "tint_b": {
+                    "order": 22, "panel": "controls", "label": "Tint B",
+                    "min": 0.0, "max": 2.0, "step": 0.05,
                 },
             }

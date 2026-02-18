@@ -10,7 +10,7 @@ Phases 1-2 (v1.0 local polish) are complete. Phases 3-6 below are the v2.0 Scope
 
 - [x] **Phase 1: LFO Smoothing** - Fix oscillator snap-back, smooth sinusoidal breathing
 - [x] **Phase 2: Iridescent Color Pipeline** - Replace 4-layer system with unified oil-slick shimmer
-- [ ] **Phase 3: Extract CASimulator** - Headless simulation core extracted from viewer.py
+- [x] **Phase 3: Extract CASimulator** - Headless simulation core extracted from viewer.py
 - [ ] **Phase 4: Scope Plugin Wrapper** - Text-only pipeline, Pydantic config, THWC tensor output
 - [ ] **Phase 5: CuPy GPU Acceleration** - Backend shim, FFT on GPU, 30+ FPS at 512x512
 - [ ] **Phase 6: RunPod Deployment** - Full pipeline: CA → Scope → Krea Realtime + LoRAs
@@ -50,7 +50,7 @@ Plans:
 
 Plans:
 - [x] 03-01-PLAN.md — Create simulator.py with CASimulator class + IridescentPipeline.render_float()
-- [ ] 03-02-PLAN.md — Refactor viewer.py to thin wrapper + simplify __main__.py snap()
+- [x] 03-02-PLAN.md — Refactor viewer.py to thin wrapper + simplify __main__.py snap()
 
 ### Phase 4: Scope Plugin Wrapper
 **Goal**: CA appears as "Cellular Automata" pipeline in Scope UI with live preset/speed/hue controls
@@ -119,11 +119,11 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. LFO Smoothing | 1/1 | Complete | 2026-02-16 |
 | 2. Iridescent Color Pipeline | 2/2 | Complete | 2026-02-16 |
-| 3. Extract CASimulator | 1/2 | In Progress | - |
+| 3. Extract CASimulator | 2/2 | Complete | 2026-02-18 |
 | 4. Scope Plugin Wrapper | 0/TBD | Not started | - |
 | 5. CuPy GPU Acceleration | 0/TBD | Not started | - |
 | 6. RunPod Deployment | 0/TBD | Not started | - |
 
 ---
 *Created: 2026-02-16*
-*Updated: 2026-02-18 — Phase 3 plan 03-01 complete (CASimulator extracted)*
+*Updated: 2026-02-18 — Phase 3 complete (viewer.py thin wrapper, snap() simplified, visual parity confirmed)*

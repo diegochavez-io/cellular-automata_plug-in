@@ -59,7 +59,7 @@ Extract simulation logic from `viewer.py` into a clean `CASimulator` class for h
 
 - [x] **SIM-02: Headless Operation** — `simulator.py` never imports pygame. Entire import chain (simulator → engines → iridescent → presets → smoothing) must be pygame-free. Verified with `sys.modules['pygame'] = None` guard before import.
 
-- [ ] **SIM-03: Viewer Delegation** — Refactor `viewer.py` to delegate simulation to `CASimulator`. Viewer becomes thin pygame display wrapper. `python -m cellular_automata coral` produces identical visual output.
+- [x] **SIM-03: Viewer Delegation** — Refactor `viewer.py` to delegate simulation to `CASimulator`. Viewer becomes thin pygame display wrapper. `python -m cellular_automata coral` produces identical visual output.
 
 - [x] **SIM-04: render_float()** — Add `render_float()` to `IridescentPipeline` returning `(H,W,3) float32 [0,1]` (uint8 / 255.0).
 

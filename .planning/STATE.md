@@ -10,13 +10,13 @@ See: .planning/PROJECT.md (updated 2026-02-17)
 ## Current Position
 
 Phase: 3 of 6 - Extract CASimulator
-Plan: 2 of 2 (03-01 complete, 03-02 next)
-Status: Plan 03-01 complete — CASimulator headless core created
-Last activity: 2026-02-18 — Plan 03-01 executed (CASimulator extracted from viewer.py)
+Plan: 2 of 2 (03-01 complete, 03-02 complete)
+Status: Phase 3 complete — CASimulator extracted, viewer delegating, snap() simplified
+Last activity: 2026-02-18 — Plan 03-02 executed (viewer.py refactored to thin pygame wrapper)
 
 ## Progress
 
-[███░░░░░░░] 30% — Phase 3 plan 1 of 2 complete
+[████░░░░░░] 40% — Phase 3 complete (2 of 2 plans done)
 
 ## Accumulated Context
 
@@ -36,6 +36,9 @@ Last activity: 2026-02-18 — Plan 03-01 executed (CASimulator extracted from vi
 - CASimulator does NOT auto-resize sim_size — caller controls size (unlike viewer.py)
 - ENGINE_CLASSES in simulator.py restricted to headless-safe engines (lenia, gray_scott, smoothlife, mnca)
 - _render_frame() in CASimulator returns raw (H,W,3) uint8 numpy array, not pygame.Surface
+- viewer.py is a thin pygame wrapper: self.simulator = CASimulator(preset, sim_size); run loop calls self.simulator.step(dt)
+- ENGINE_LABELS kept in viewer.py (display-only, not simulation logic)
+- FLOW_SLIDER_DEFS kept in viewer.py (panel layout config, not sim logic)
 
 ### Pending Todos
 
@@ -48,5 +51,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-18
-Stopped at: Completed 03-01-PLAN.md (CASimulator extraction). Next: 03-02-PLAN.md (viewer.py refactor to delegate to CASimulator)
+Stopped at: Completed 03-02-PLAN.md (viewer.py refactored). Phase 3 complete. Next: Phase 4 — Scope plugin wrapper.
 Resume file: None

@@ -67,10 +67,11 @@ Plans:
   8. No pygame import anywhere in the installed plugin package
   9. Plugin loads instantly (warmup deferred, no init blocking)
   10. LFO breathing works at correct tempo (wall-clock dt, not fixed dt)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD during planning
+- [ ] 04-01-PLAN.md — Create plugin files (pyproject.toml, plugin.py, pipeline.py) + deferred warmup in CASimulator
+- [ ] 04-02-PLAN.md — Install plugin package and verify in Scope UI
 
 ### Phase 5: CuPy GPU Acceleration
 **Goal**: 30+ FPS at 512x512 on RTX 5090 using CuPy backend

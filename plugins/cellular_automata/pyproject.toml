@@ -13,13 +13,9 @@ dependencies = [
 cellular_automata = "cellular_automata.plugin"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["cellular_automata"]
-exclude = [
-    "cellular_automata/viewer.py",
-    "cellular_automata/controls.py",
-    "cellular_automata/__main__.py",
-]
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["cellular_automata*"]

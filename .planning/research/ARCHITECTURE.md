@@ -1,722 +1,632 @@
-# Architecture Patterns: Iridescent Color Rendering for Cellular Automata
+# Architecture Research: Scope Plugin + GPU Deployment
 
-**Domain:** Real-time procedural iridescent rendering for 2D simulation fields
-**Researched:** 2026-02-16
-**Confidence:** MEDIUM (thin-film physics: HIGH, CPU implementation patterns: MEDIUM, safe parameter control: HIGH)
-
-## Executive Summary
-
-The current 4-layer additive color system (Core/Halo/Spark/Memory) needs replacement with an iridescent rendering pipeline that produces oil-slick shimmer, slow hue sweeps, and spatial gradients. This research identifies a component architecture based on thin-film interference physics, procedural spatial field generation, and safe parameter interpolation patterns.
-
-**Key finding:** Thin-film interference color is computationally lightweight (wavelength-dependent phase calculation) and can be implemented efficiently on CPU with numpy. The architecture should separate physical iridescence from artistic controls (spatial gradients, hue sweep, RGB tint) for maximum flexibility.
-
-## Recommended Architecture
-
-### System Overview
-
-```
-Engine (existing)
-    ↓ world state [H, W] float64 [0,1]
-    ↓
-IridescentColorSystem (replaces ColorLayerSystem)
-    ├─ ThicknessMapper: world → thickness field [H, W]
-    ├─ SpatialGradient: position → gradient offset [H, W]
-    ├─ HueSweep: time → global hue rotation [scalar]
-    ├─ ThinFilmRenderer: thickness + gradient + hue → RGB
-    └─ RGBTint: RGB + tint controls → final RGBA
-    ↓
-RGBA frame [H, W, 4] uint8 → display
-```
-
-### Component Boundaries
-
-| Component | Responsibility | Input | Output | Performance Budget |
-|-----------|---------------|-------|--------|-------------------|
-| **ThicknessMapper** | Map world density to film thickness | world [H,W] float64 | thickness [H,W] nm | <2ms @ 1024² |
-| **SpatialGradient** | Generate spatial variation field | (x, y) grid + params | gradient [H,W] | <3ms @ 1024² |
-| **HueSweep** | Global hue rotation over time | time (seconds) | hue_offset (degrees) | <0.1ms |
-| **ThinFilmRenderer** | Compute interference RGB from thickness | thickness + gradient + hue | RGB [H,W,3] float32 | <12ms @ 1024² |
-| **RGBTint** | Apply user color correction | RGB + R/G/B/brightness sliders | RGBA uint8 | <2ms @ 1024² |
-| **SafeSliderManager** | Interpolate parameter changes | slider_new, slider_current, dt | slider_smooth | <0.5ms total |
-
-**Total rendering budget:** ~20ms/frame (within 22ms baseline with 2ms margin)
+**Domain:** Scope plugin wrapper for cellular automata video source, with CuPy GPU acceleration and RunPod deployment
+**Researched:** 2026-02-17
+**Confidence:** HIGH (Scope plugin API confirmed from example_plugin, code structure verified from codebase, CuPy API patterns from official docs)
 
 ---
 
-## Component Designs
+## System Overview
 
-### 1. ThicknessMapper
+```
+LOCAL (pygame mode)                 SCOPE (headless mode)
+────────────────────               ────────────────────────────
+pygame event loop                   Scope scheduler
+    │                                   │
+    ↓                                   ↓
+Viewer.__init__()                   CAPipeline.__init__()
+    │                                   │
+    ↓                                   ↓
+CASimulator (NEW — extracted)  ←──  CASimulator (shared core)
+    │   engine.step()                   │   engine.step()
+    │   _advect()                       │   _advect()
+    │   _manage_coverage()              │   _manage_coverage()
+    │   iridescent.render()             │   iridescent.render()
+    │                                   │
+    ↓                                   ↓
+pygame surface → display        THWC tensor [0,1] → Scope
+```
 
-**Purpose:** Convert world state (cell density [0,1]) to thin-film thickness in nanometers.
+The key insight: extract a `CASimulator` class from `viewer.py` that holds all simulation logic without any pygame dependency. Both the pygame `Viewer` and the Scope `CAPipeline` delegate to it.
 
-**Architecture:**
+---
+
+## Component Boundaries
+
+### Current State (Phase 1 — before refactor)
+
+| File | Responsibility | pygame dep? | Problem for Scope |
+|------|---------------|-------------|-------------------|
+| `viewer.py` | Sim loop + display + UI event handling | YES | Monolith, can't use headless |
+| `iridescent.py` | Cosine palette color pipeline | NO | Ready to use as-is |
+| `engine_base.py` | CAEngine abstract base | NO | Ready to use as-is |
+| `lenia.py` | Lenia FFT engine | NO | Ready to use as-is |
+| `smoothlife.py` | SmoothLife engine | NO | Ready to use as-is |
+| `mnca.py` | MNCA ring-kernel engine | NO | Ready to use as-is |
+| `gray_scott.py` | GS reaction-diffusion | NO | Ready to use as-is |
+| `smoothing.py` | EMA params, LFO systems | NO | Ready to use as-is |
+| `presets.py` | Preset definitions | NO | Ready to use as-is |
+| `controls.py` | pygame UI widgets | YES (100%) | Drop entirely for Scope |
+
+### Target State (Phase 2 — after refactor)
+
+| File | Responsibility | New/Modified |
+|------|---------------|--------------|
+| `simulator.py` | Pure simulation logic (extracted from viewer.py) | NEW |
+| `viewer.py` | pygame display wrapper that delegates to CASimulator | MODIFIED (slim) |
+| `plugin.py` | Scope plugin registration (`register_pipelines`) | NEW |
+| `pipeline.py` | Scope pipeline class that delegates to CASimulator | NEW |
+| `numpy_backend.py` | numpy/scipy wrappers for CPU ops | NEW (Phase 3) |
+| `cupy_backend.py` | CuPy GPU equivalents | NEW (Phase 3) |
+| All engine files | Unchanged — pure numpy, engine-agnostic | UNCHANGED |
+| `iridescent.py` | Add `render_float()` returning [0,1] instead of uint8 | MINOR |
+| `presets.py` | Unchanged | UNCHANGED |
+
+---
+
+## What to Extract from viewer.py
+
+`viewer.py` currently mixes two concerns. The extraction boundary is clear:
+
+**Stays in Viewer (pygame display):**
+- `pygame.init()`, `pygame.display.set_mode()`
+- `_build_panel()`, `_sync_sliders_from_engine()`
+- `_handle_keydown()`, `_handle_mouse()`
+- `_draw_hud()`, `_save_screenshot()`
+- `run()` loop with `clock.tick(60)` and `pygame.display.flip()`
+
+**Moves to CASimulator (pure logic):**
+- All LFO system classes: `LeniaLFOSystem`, `GrayScottLFOSystem`, `SmoothLifeLFOSystem`, `MNCALFOSystem`, `SinusoidalLFO`
+- `_build_containment()`, `_build_noise_mask()`, `_build_stir_field()`
+- `_build_color_offset()`, `_build_flow_fields()`
+- `_advect()`, `_fast_noise()`, `_dilate_world()`, `_blur_world()`
+- `_apply_preset()`, `_create_engine()`
+- `_drop_center_seed()`, `_drop_seed_cluster()`
+- `_render_gs_emboss()` and `_render_frame()` → return `np.ndarray` not `pygame.Surface`
+- `_apply_bloom()`
+- Per-frame sim logic: smoothed params, LFO update, `engine.step()`, advection, containment, noise/stir
+- Coverage management: `_prev_mass`, `_stagnant_frames`, `_nucleation_counter`
+- The `speed_accumulator` fractional speed system
+
+**New CASimulator interface:**
 ```python
-class ThicknessMapper:
-    def __init__(self, min_thickness_nm=200, max_thickness_nm=800):
-        self.min_nm = min_thickness_nm
-        self.max_nm = max_thickness_nm
-        self.contrast = 1.5  # Exponent for nonlinear mapping
+class CASimulator:
+    def __init__(self, preset_key="coral", sim_size=None):
+        """Initialize with preset. sim_size=None uses preset default."""
+        ...
 
-    def map(self, world: np.ndarray) -> np.ndarray:
-        """Map world [0,1] → thickness [min_nm, max_nm]."""
-        # Nonlinear mapping: lower densities → thinner film (blue shift)
-        # higher densities → thicker film (red shift)
-        normalized = np.clip(world, 0, 1) ** self.contrast
-        thickness_nm = self.min_nm + normalized * (self.max_nm - self.min_nm)
-        return thickness_nm.astype(np.float32)
-```
+    def apply_preset(self, key: str):
+        """Switch to a named preset (engine + params + seed)."""
+        ...
 
-**Rationale:**
-- Visible thin-film interference occurs in 200-800nm range (source: Wikipedia, Physics LibreTexts)
-- Nonlinear mapping (power curve) creates richer color variation in low-density regions
-- Pre-allocated output buffer for performance
+    def set_runtime_params(self, **kwargs):
+        """Accept Scope kwargs: preset, speed, hue, brightness, flow_*, thickness."""
+        ...
 
-**Data flow:**
-```
-engine.world [1024, 1024] float64
-    ↓ clip + power curve + scale
-thickness_field [1024, 1024] float32 (nm values)
+    def step(self, dt: float) -> np.ndarray:
+        """Advance simulation by dt seconds. Returns RGB (H, W, 3) uint8."""
+        ...
+
+    def render_float(self, dt: float) -> np.ndarray:
+        """Same as step() but returns (H, W, 3) float32 in [0, 1]. Used by Scope."""
+        ...
 ```
 
 ---
 
-### 2. SpatialGradient
+## Scope Plugin Architecture
 
-**Purpose:** Generate a 2D spatial field that varies smoothly across the grid, creating rainbow sweeps across the organism.
+### File Structure
 
-**Architecture:**
-```python
-class SpatialGradient:
-    def __init__(self, size):
-        self.size = size
-        # Pre-compute coordinate grids
-        Y, X = np.ogrid[:size, :size]
-        self.X = X.astype(np.float32) / size  # Normalized [0, 1]
-        self.Y = Y.astype(np.float32) / size
-
-        # Gradient parameters (controllable)
-        self.angle_deg = 45.0      # Direction of gradient sweep
-        self.wavelength = 1.5      # Spatial frequency (cycles across image)
-        self.amplitude_nm = 150.0  # Thickness modulation strength
-
-    def compute(self) -> np.ndarray:
-        """Compute spatial gradient field → thickness offset [H, W]."""
-        angle_rad = np.deg2rad(self.angle_deg)
-
-        # Rotated coordinate: project X,Y onto gradient direction
-        rotated = self.X * np.cos(angle_rad) + self.Y * np.sin(angle_rad)
-
-        # Sinusoidal thickness variation
-        gradient_offset = self.amplitude_nm * np.sin(
-            rotated * self.wavelength * 2 * np.pi
-        )
-        return gradient_offset
+```
+plugins/cellular_automata/
+├── __init__.py
+├── __main__.py          # Entry point: python -m cellular_automata coral
+├── plugin.py            # Scope registration (register_pipelines)
+├── pipeline.py          # CAPipeline class (Scope interface)
+├── simulator.py         # CASimulator (pure logic, extracted from viewer.py)
+├── viewer.py            # pygame Viewer (wraps CASimulator + handles display)
+├── iridescent.py        # Color pipeline (add render_float())
+├── engine_base.py       # CAEngine abstract base
+├── lenia.py             # Lenia FFT engine
+├── smoothlife.py        # SmoothLife engine
+├── mnca.py              # MNCA engine
+├── gray_scott.py        # Gray-Scott engine
+├── smoothing.py         # EMA + LFO systems
+├── presets.py           # All preset definitions
+└── controls.py          # pygame UI widgets (local-only, never imported by pipeline)
 ```
 
-**Rationale:**
-- Spatial gradients create the "oil slick" rainbow sweep effect
-- Sine wave produces smooth, organic color transitions
-- Pre-computed coordinate grids minimize per-frame cost
-- Parameters (angle, wavelength, amplitude) give artistic control
+### pyproject.toml Entry Point
 
-**Advanced option (for Phase 2+):**
-- Add Perlin/Simplex noise for organic, non-uniform gradients
-- Multi-scale noise layers for complex shimmer patterns
-- Trade: +visual richness, -complexity, -~5ms performance cost
+```toml
+[project]
+name = "cellular-automata-scope-plugin"
+version = "0.2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "torch>=2.0.0",   # Required for Scope THWC tensor return
+]
 
-**Data flow:**
-```
-Pre-computed: X, Y grids [1024, 1024] float32
-Runtime: angle, wavelength, amplitude (scalars)
-    ↓ sin(rotated_coord * wavelength)
-gradient_offset [1024, 1024] float32 (nm)
-```
+[project.entry-points."scope"]
+cellular_automata = "cellular_automata.plugin"
 
----
-
-### 3. HueSweep
-
-**Purpose:** Slowly rotate the entire color palette over time (the "rainbow rotation" from the old system).
-
-**Architecture:**
-```python
-class HueSweep:
-    def __init__(self):
-        self.hue_time = 0.0
-        self.hue_speed = 2.5  # degrees/second (~144s full rotation)
-
-    def advance(self, dt: float) -> float:
-        """Advance time, return current hue offset in degrees."""
-        self.hue_time += self.hue_speed * dt
-        return self.hue_time % 360
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 ```
 
-**Rationale:**
-- Matches existing ColorLayerSystem behavior (2.5 deg/s)
-- Independent of spatial gradient (allows composability)
-- Trivial compute cost (<0.1ms)
-
----
-
-### 4. ThinFilmRenderer
-
-**Purpose:** Core physics computation — convert thickness to RGB using thin-film interference equations.
-
-**Physics Background:**
-
-Thin-film interference occurs when light reflects from both the top and bottom surfaces of a thin film. The two reflected waves interfere constructively or destructively depending on:
-- **Film thickness (t)**: distance light travels through film
-- **Wavelength (λ)**: different colors interfere at different thicknesses
-- **Refractive index (n)**: film material (oil ~1.5, soap ~1.33)
-
-**Interference condition:**
-```
-Optical path difference = 2 * n * t * cos(θ)
-Constructive interference: path difference = (m + 0.5) * λ
-Destructive interference:  path difference = m * λ
-```
-
-For perpendicular viewing (θ=0), this simplifies to:
-```
-Constructive: 2*n*t = (m + 0.5) * λ
-Destructive:  2*n*t = m * λ
-```
-
-**Sources:**
-- [Wikipedia: Thin-film interference](https://en.wikipedia.org/wiki/Thin-film_interference)
-- [Physics LibreTexts: Thin Film Interference](https://phys.libretexts.org/Bookshelves/University_Physics/Calculus-Based_Physics_(Schnick)/Volume_B:_Electricity_Magnetism_and_Optics/B24:_Thin_Film_Interference)
-- [OpenStax: Interference in Thin Films](https://openstax.org/books/university-physics-volume-3/pages/3-4-interference-in-thin-films)
-
-**Implementation Strategy:**
-
-Sample RGB wavelengths (645nm red, 526nm green, 445nm blue) and compute interference intensity for each.
+### plugin.py
 
 ```python
-class ThinFilmRenderer:
-    def __init__(self, size):
-        self.size = size
-        self.refractive_index = 1.45  # Oil-like film
+from .pipeline import CAPipeline
 
-        # RGB wavelengths (nanometers)
-        self.lambda_r = 645.0
-        self.lambda_g = 526.0
-        self.lambda_b = 445.0
-
-        # Pre-allocate output
-        self._rgb = np.zeros((size, size, 3), dtype=np.float32)
-
-    def render(self, thickness: np.ndarray, gradient: np.ndarray,
-               hue_offset: float) -> np.ndarray:
-        """
-        Compute RGB from thickness field using thin-film interference.
-
-        Args:
-            thickness: Base thickness field [H, W] in nm
-            gradient: Spatial gradient offset [H, W] in nm
-            hue_offset: Global hue rotation in degrees
-
-        Returns:
-            RGB image [H, W, 3] float32 in [0, 255]
-        """
-        # Total thickness = base + gradient modulation
-        t = thickness + gradient
-
-        # Optical path length = 2 * n * t
-        path = 2.0 * self.refractive_index * t
-
-        # Interference intensity for each wavelength
-        # Using simplified cosine model: I = cos²(π * path / λ)
-        phase_r = np.pi * path / self.lambda_r
-        phase_g = np.pi * path / self.lambda_g
-        phase_b = np.pi * path / self.lambda_b
-
-        I_r = np.cos(phase_r) ** 2
-        I_g = np.cos(phase_g) ** 2
-        I_b = np.cos(phase_b) ** 2
-
-        # Apply hue rotation (rotate in HSV space)
-        rgb_rotated = self._rotate_hue(
-            np.stack([I_r, I_g, I_b], axis=2),
-            hue_offset
-        )
-
-        # Scale to [0, 255]
-        return (rgb_rotated * 255.0).astype(np.float32)
-
-    def _rotate_hue(self, rgb: np.ndarray, hue_deg: float) -> np.ndarray:
-        """Rotate RGB in hue space (approximate, fast method)."""
-        # Fast rotation matrix approach (cheaper than RGB→HSV→RGB)
-        hue_rad = np.deg2rad(hue_deg)
-        U = np.cos(hue_rad)
-        W = np.sin(hue_rad)
-
-        # Rotation matrix (preserves luminance)
-        r = rgb[..., 0] * (0.299 + 0.701*U + 0.168*W) + \
-            rgb[..., 1] * (0.587 - 0.587*U + 0.330*W) + \
-            rgb[..., 2] * (0.114 - 0.114*U - 0.497*W)
-
-        g = rgb[..., 0] * (0.299 - 0.299*U - 0.328*W) + \
-            rgb[..., 1] * (0.587 + 0.413*U + 0.035*W) + \
-            rgb[..., 2] * (0.114 - 0.114*U + 0.292*W)
-
-        b = rgb[..., 0] * (0.299 - 0.300*U + 1.250*W) + \
-            rgb[..., 1] * (0.587 - 0.588*U - 1.050*W) + \
-            rgb[..., 2] * (0.114 + 0.886*U - 0.203*W)
-
-        return np.clip(np.stack([r, g, b], axis=2), 0, 1)
+def register_pipelines(registry):
+    registry.register(
+        name="cellular_automata",
+        pipeline_class=CAPipeline,
+        description="Living cellular automata organism as video source"
+    )
 ```
 
-**Rationale:**
-- **Cosine model:** Simplified but physically plausible (source: Alan Zucconi, Shadertoy implementations)
-- **Wavelength sampling:** 3 wavelengths sufficient for RGB (full spectral integration unnecessary)
-- **Hue rotation:** Fast matrix method avoids costly RGB↔HSV conversions
-- **Performance:** Vectorized numpy operations stay within budget (~12ms for 1024²)
+### pipeline.py (CAPipeline)
 
-**Accuracy vs Performance Trade:**
-- **Current design:** Fast cosine approximation, 3 wavelengths
-- **Higher accuracy:** Integrate over full spectrum (380-750nm), Fresnel coefficients → +20-30ms (unacceptable)
-- **Lower accuracy:** Lookup table (LUT) pre-computed thickness→RGB → saves ~5ms but less flexible
+The pipeline is text-only (no `prepare()` method — CA generates its own frames). It holds a `CASimulator` instance and calls `render_float()` each frame.
 
-**Sources:**
-- [Alan Zucconi: Car Paint Shader - Thin-Film Interference](https://www.alanzucconi.com/2017/10/27/carpaint-shader-thin-film-interference/)
-- [Shadertoy: Fast Thin-Film Interference](https://www.shadertoy.com/view/ld3SDl)
-- [Jelly Renders: Rendering a Simple Iridescent Material](https://jellyrenders.com/graphics/ray%20tracing/2025/11/17/simple-iridescent-material/)
-
----
-
-### 5. RGBTint
-
-**Purpose:** Apply user-controllable color correction (R/G/B channel gains, brightness).
-
-**Architecture:**
 ```python
-class RGBTint:
-    def __init__(self):
-        self.gain_r = 1.0
-        self.gain_g = 1.0
-        self.gain_b = 1.0
-        self.brightness = 1.0  # Master brightness multiplier
+import torch
+import numpy as np
+from .simulator import CASimulator
 
-    def apply(self, rgb: np.ndarray) -> np.ndarray:
-        """Apply color tint and brightness to RGB field.
 
-        Args:
-            rgb: [H, W, 3] float32 in [0, 255]
+class CAPipeline:
+    def __init__(self, preset: str = "coral", sim_size: int = 1024):
+        # Load-time params: preset, sim_size
+        # These are fixed at pipeline load
+        self.simulator = CASimulator(preset_key=preset, sim_size=sim_size)
+        self._last_time = None
 
-        Returns:
-            RGBA [H, W, 4] uint8
-        """
-        # Apply channel gains
-        rgb[:, :, 0] *= self.gain_r
-        rgb[:, :, 1] *= self.gain_g
-        rgb[:, :, 2] *= self.gain_b
+    def __call__(self, prompt: str = "", **kwargs) -> torch.Tensor:
+        # Runtime params — ALL read from kwargs, never cached in __init__
+        preset = kwargs.get("preset", None)
+        speed = kwargs.get("speed", 1.0)
+        hue = kwargs.get("hue", 0.25)
+        brightness = kwargs.get("brightness", 1.0)
+        thickness = kwargs.get("thickness", 0.0)
+        # Flow fields
+        flow_rotate = kwargs.get("flow_rotate", None)
+        flow_swirl = kwargs.get("flow_swirl", None)
+        flow_vortex = kwargs.get("flow_vortex", None)
+        flow_bubble = kwargs.get("flow_bubble", None)
 
-        # Apply brightness
-        rgb *= self.brightness
+        # Apply runtime params to simulator
+        runtime = {k: v for k, v in {
+            "speed": speed, "hue": hue, "brightness": brightness,
+            "thickness": thickness, "flow_rotate": flow_rotate,
+            "flow_swirl": flow_swirl, "flow_vortex": flow_vortex,
+            "flow_bubble": flow_bubble,
+        }.items() if v is not None}
 
-        # Clip and convert to uint8
-        rgb_clipped = np.clip(rgb, 0, 255).astype(np.uint8)
+        if preset is not None:
+            self.simulator.apply_preset(preset)
 
-        # Add alpha channel (opaque)
-        rgba = np.dstack([rgb_clipped, np.full_like(rgb_clipped[:, :, 0], 255)])
-        return rgba
+        self.simulator.set_runtime_params(**runtime)
+
+        # Compute dt (wall-clock time between Scope calls)
+        import time
+        now = time.monotonic()
+        if self._last_time is None:
+            dt = 1.0 / 30.0  # Assume 30fps on first frame
+        else:
+            dt = min(now - self._last_time, 0.1)  # Cap dt
+        self._last_time = now
+
+        # Render one frame as float32 [H, W, 3] in [0, 1]
+        frame_np = self.simulator.render_float(dt)  # (H, W, 3) float32
+
+        # Convert to THWC torch tensor: (1, H, W, 3)
+        tensor = torch.from_numpy(frame_np).unsqueeze(0)  # Add T dimension
+        return tensor  # THWC, values in [0, 1]
+
+    @staticmethod
+    def ui_field_config():
+        return {
+            # Load-time (Settings panel)
+            "preset": {
+                "order": 1, "panel": "settings", "label": "Starting Preset",
+                "choices": [
+                    "coral", "amoeba", "lava_lamp", "tide_pool",
+                    "sl_gliders", "sl_worms", "sl_pulse",
+                    "mnca_mitosis", "mnca_worm",
+                    "labyrinth", "tentacles", "medusa",
+                ]
+            },
+            "sim_size": {
+                "order": 2, "panel": "settings", "label": "Sim Resolution",
+                "choices": [512, 1024]
+            },
+            # Runtime (Controls panel)
+            "speed": {
+                "order": 1, "panel": "controls", "label": "Speed",
+                "min": 0.5, "max": 5.0, "step": 0.1
+            },
+            "hue": {
+                "order": 2, "panel": "controls", "label": "Hue",
+                "min": 0.0, "max": 1.0, "step": 0.01
+            },
+            "brightness": {
+                "order": 3, "panel": "controls", "label": "Brightness",
+                "min": 0.1, "max": 3.0, "step": 0.1
+            },
+            "thickness": {
+                "order": 4, "panel": "controls", "label": "Thickness",
+                "min": 0.0, "max": 20.0, "step": 0.5
+            },
+            "flow_rotate": {
+                "order": 5, "panel": "controls", "label": "Rotation Flow",
+                "min": -1.0, "max": 1.0, "step": 0.05
+            },
+            "flow_swirl": {
+                "order": 6, "panel": "controls", "label": "Swirl Flow",
+                "min": -1.0, "max": 1.0, "step": 0.05
+            },
+            "flow_vortex": {
+                "order": 7, "panel": "controls", "label": "Vortex Flow",
+                "min": -1.0, "max": 1.0, "step": 0.05
+            },
+        }
 ```
-
-**Rationale:**
-- Simple multiplicative gains (artist-friendly)
-- Separate R/G/B control allows color balance adjustments
-- Brightness master control for overall intensity
-- Cheap operation (<2ms)
 
 ---
 
-### 6. SafeSliderManager
+## Headless Operation (No pygame)
 
-**Purpose:** Prevent abrupt parameter changes from killing the organism. Interpolate slider values smoothly over time.
+The critical design principle: `simulator.py` must never import pygame.
 
-**Problem:**
-User moves a slider → parameter jumps instantly → organism dies or exhibits discontinuity.
+**pygame-free rendering path:**
+- `IridescentPipeline.render()` already returns `np.ndarray (H, W, 3) uint8` — no pygame
+- Add `IridescentPipeline.render_float()` that returns `(H, W, 3) float32 in [0, 1]` — divide by 255.0
+- All scipy operations (gaussian_filter, zoom, map_coordinates) are import-guarded with `try/except` already — they fall back gracefully
+- Engine `.step()` methods are pure numpy — no display dependency
+- All flow field / containment / noise logic in viewer.py is pure numpy — moves to simulator.py cleanly
 
-**Solution:**
-Exponential moving average (EMA) smoothing of parameter values.
+**Headless test harness:**
 
-**Architecture:**
 ```python
-class SafeSliderManager:
-    def __init__(self, smoothing_time_seconds=0.5):
-        """
-        Args:
-            smoothing_time_seconds: Time constant for parameter changes.
-                Smaller = faster response, larger = smoother but slower.
-        """
-        self.smoothing_time = smoothing_time_seconds
-        self._params = {}  # {param_name: current_smooth_value}
+# Verify no pygame import:
+import importlib
+import sys
+# Block pygame
+sys.modules['pygame'] = None
 
-    def update(self, param_name: str, target_value: float, dt: float) -> float:
-        """Update parameter with EMA smoothing.
-
-        Args:
-            param_name: Name of parameter (e.g., "mu", "sigma", "kernel_R")
-            target_value: New value from slider
-            dt: Time delta since last frame (seconds)
-
-        Returns:
-            Smoothed parameter value to apply to engine
-        """
-        if param_name not in self._params:
-            # First time seeing this parameter - initialize immediately
-            self._params[param_name] = target_value
-            return target_value
-
-        current = self._params[param_name]
-
-        # EMA coefficient: higher alpha = faster convergence
-        alpha = 1.0 - np.exp(-dt / self.smoothing_time)
-
-        # Exponential moving average
-        smoothed = current + alpha * (target_value - current)
-
-        self._params[param_name] = smoothed
-        return smoothed
-
-    def reset(self, param_name: str):
-        """Clear smoothing state for a parameter (e.g., on preset change)."""
-        if param_name in self._params:
-            del self._params[param_name]
+from cellular_automata.simulator import CASimulator  # Must not crash
+sim = CASimulator(preset_key="coral")
+frame = sim.render_float(0.033)  # 30fps tick
+assert frame.shape == (1024, 1024, 3)
+assert frame.min() >= 0.0 and frame.max() <= 1.0
 ```
 
-**Rationale:**
-- **EMA formula:** `value_new = value_current + α * (target - value_current)` where `α = 1 - exp(-dt / τ)`
-- **Time constant (τ):** 0.5s default = parameter reaches 95% of target in ~1.5 seconds
-- **Per-parameter state:** Each slider smoothed independently
-- **Reset on preset change:** Prevents slow drift when switching presets
-
-**Example usage in viewer:**
+**`__main__.py` stays pygame-dependent** (only imported when running as standalone):
 ```python
-# In viewer.py, replace direct parameter application:
-# OLD:
-# self.engine.set_params(mu=slider_value)
-
-# NEW:
-smoothed_mu = self.safe_sliders.update("mu", slider_value, dt)
-self.engine.set_params(mu=smoothed_mu)
+# __main__.py
+from .viewer import Viewer   # Viewer imports pygame — that's fine here
 ```
 
-**Sources:**
-- [MathWorks: Parameter Smoother Block](https://www.mathworks.com/help/dsp/ref/parametersmoother.html)
-- [Medium: Exponential Moving Average Smoothing](https://medium.com/@dmitriy.bolotov/six-approaches-to-time-series-smoothing-cc3ea9d6b64f)
-- [Wikipedia: Exponential Smoothing](https://en.wikipedia.org/wiki/Exponential_smoothing)
-
-**Performance:** Negligible (<0.5ms for all parameters combined)
+**`viewer.py` imports pygame at module level** — stays isolated from `simulator.py` and `pipeline.py`.
 
 ---
 
-## Integration with Existing Pipeline
+## CuPy GPU Abstraction Layer
 
-### Current Pipeline (to be replaced)
-```
-Engine.step() → world [H, W] float64
-    ↓
-ColorLayerSystem.compute_signals() → 4 signals [4, H, W]
-    ├─ Core: world density
-    ├─ Halo: edge gradient
-    ├─ Spark: temporal change
-    └─ Memory: EMA trail
-    ↓
-ColorLayerSystem.composite() → RGB [H, W, 3] uint8
-    ↓
-viewer._render_frame() → pygame surface
-```
+### Strategy: Conditional Import with Backend Swapping
 
-### New Pipeline (proposed)
-```
-Engine.step() → world [H, W] float64
-    ↓
-IridescentColorSystem.render()
-    ├─ ThicknessMapper.map(world) → thickness [H, W]
-    ├─ SpatialGradient.compute() → gradient [H, W]
-    ├─ HueSweep.advance(dt) → hue_offset [scalar]
-    ├─ ThinFilmRenderer.render(thickness, gradient, hue) → RGB [H, W, 3]
-    └─ RGBTint.apply(RGB) → RGBA [H, W, 4] uint8
-    ↓
-viewer._render_frame() → pygame surface
-```
-
-### Migration Strategy
-
-**Phase 1: Parallel implementation**
-- Create `iridescent_color.py` alongside `color_layers.py`
-- Implement all 6 components as separate classes
-- Add toggle in viewer to switch between old/new systems
-
-**Phase 2: Integration**
-- Replace `ColorLayerSystem` instantiation with `IridescentColorSystem`
-- Update UI sliders: remove layer weights, add RGB tint + gradient controls
-- Integrate `SafeSliderManager` for all engine parameters
-
-**Phase 3: Cleanup**
-- Remove `color_layers.py` after validation
-- Remove old layer weight sliders from UI
-- Simplify control panel layout
-
----
-
-## Data Flow Diagram
+Do NOT create parallel GPU code paths for each engine. Instead, create a thin backend module that switches `np`/`scipy` to `cupy`/`cupyx` based on availability. All engine and simulator code imports from the backend.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    Engine (existing)                          │
-│  - Lenia.step() → world [1024, 1024] float64 [0, 1]         │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ↓
-┌──────────────────────────────────────────────────────────────┐
-│              IridescentColorSystem                           │
-│                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Thickness    │  │ Spatial      │  │ Hue          │      │
-│  │ Mapper       │  │ Gradient     │  │ Sweep        │      │
-│  │              │  │              │  │              │      │
-│  │ world        │  │ (X, Y, time) │  │ time         │      │
-│  │   ↓          │  │   ↓          │  │   ↓          │      │
-│  │ thickness    │  │ gradient     │  │ hue_offset   │      │
-│  │ [H,W] nm     │  │ [H,W] nm     │  │ (degrees)    │      │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
-│         │                 │                 │              │
-│         └─────────────────┼─────────────────┘              │
-│                           ↓                                │
-│                  ┌────────────────┐                        │
-│                  │ ThinFilm       │                        │
-│                  │ Renderer       │                        │
-│                  │                │                        │
-│                  │ Physics:       │                        │
-│                  │ cos²(π·2nt/λ)  │                        │
-│                  │   ↓            │                        │
-│                  │ RGB [H,W,3]    │                        │
-│                  └────────┬───────┘                        │
-│                           ↓                                │
-│                  ┌────────────────┐                        │
-│                  │ RGB            │                        │
-│                  │ Tint           │                        │
-│                  │                │                        │
-│                  │ R/G/B gains    │                        │
-│                  │ brightness     │                        │
-│                  │   ↓            │                        │
-│                  │ RGBA uint8     │                        │
-│                  └────────┬───────┘                        │
-└──────────────────────────┼──────────────────────────────────┘
-                           │
-                           ↓
-                  pygame surface → display
+Phase 3 goal: one-line backend switch toggles all GPU acceleration.
 ```
 
----
+### Backend Module Design
 
-## Safe Slider Integration
-
-### Current Slider System (in viewer.py)
 ```python
-# Direct parameter application (UNSAFE)
-def _make_param_callback(self, key):
-    def callback(val):
-        self.engine.set_params(**{key: val})
-    return callback
+# cellular_automata/backend.py
+
+def get_backend():
+    """Return (np, scipy_ndimage) — CuPy if available, numpy otherwise."""
+    try:
+        import cupy as cp
+        import cupyx.scipy.ndimage as cpnd
+        # Verify GPU is actually accessible
+        cp.zeros(1)
+        return cp, cpnd
+    except (ImportError, Exception):
+        import numpy as np
+        try:
+            import scipy.ndimage as nd
+        except ImportError:
+            nd = None
+        return np, nd
+
+np, ndimage = get_backend()
 ```
 
-### New Slider System (with SafeSliderManager)
+Then in each engine file:
 ```python
-class Viewer:
-    def __init__(self, ...):
-        # ... existing init ...
-        self.safe_sliders = SafeSliderManager(smoothing_time_seconds=0.3)
+# lenia.py
+from .backend import np  # Replaces: import numpy as np
 
-    def _make_param_callback(self, key):
-        """Create callback with safe interpolation."""
-        def callback(val):
-            # Store target value, will be smoothed in main loop
-            self.slider_targets[key] = val
-        return callback
-
-    def run(self):
-        # In main loop, BEFORE engine.step():
-        for key, target in self.slider_targets.items():
-            smoothed = self.safe_sliders.update(key, target, dt)
-            self.engine.set_params(**{key: smoothed})
-
-        # Then step engine with smoothed params
-        if not self.paused:
-            self.engine.step()
+class Lenia(CAEngine):
+    def step(self):
+        world_fft = np.fft.rfft2(self.world)  # numpy or cupy — same API
+        ...
 ```
 
-**Critical points:**
-- Slider callback stores TARGET value (user intent)
-- Main loop applies SMOOTHED value (prevents jumps)
-- Smoothing happens BEFORE engine.step() to avoid state corruption
-- Each parameter smoothed independently (mu, sigma, R, T, etc.)
+And in simulator.py:
+```python
+from .backend import np, ndimage
+# All gaussian_filter, map_coordinates, zoom calls use ndimage
+```
+
+### numpy vs CuPy API Differences
+
+| numpy/scipy operation | CuPy equivalent | Notes |
+|----------------------|-----------------|-------|
+| `np.fft.rfft2()` | `cp.fft.rfft2()` | Drop-in — Lenia kernel convolution |
+| `np.fft.irfft2()` | `cp.fft.irfft2()` | Drop-in |
+| `scipy.ndimage.gaussian_filter()` | `cupyx.scipy.ndimage.gaussian_filter()` | Drop-in |
+| `scipy.ndimage.zoom()` | `cupyx.scipy.ndimage.zoom()` | Drop-in |
+| `scipy.ndimage.map_coordinates()` | `cupyx.scipy.ndimage.map_coordinates()` | Drop-in — advection |
+| `np.random.randn()` | `cp.random.randn()` | Drop-in — noise pool |
+| `np.zeros(..., dtype=np.float32)` | `cp.zeros(..., dtype=cp.float32)` | Drop-in |
+| `np.ogrid[...]` | `cp.ogrid[...]` | Drop-in |
+
+**Critical difference: data transfer.** When returning to Scope, convert from GPU to CPU:
+```python
+# In render_float() inside CASimulator:
+frame_np = self.iridescent.render_float(dt)  # Returns cupy array if GPU
+if hasattr(frame_np, 'get'):
+    frame_np = frame_np.get()  # cupy → numpy (GPU → CPU)
+return frame_np  # numpy array for torch.from_numpy()
+```
+
+**Pre-allocate on GPU.** The noise pool, containment fields, flow fields — all pre-computed at init. On GPU these live in VRAM. The 1024x1024 float32 world + buffers = ~16MB — trivial for RTX 5090's 32GB.
+
+### Performance Targets
+
+| Operation | CPU (numpy) | GPU (CuPy) target | Bottleneck |
+|-----------|-------------|-------------------|------------|
+| Lenia step (FFT) | ~80ms | ~5ms | cuFFT |
+| SmoothLife step (FFT) | ~80ms | ~5ms | cuFFT |
+| MNCA step | ~40ms | ~3ms | GPU parallelism |
+| Gray-Scott step | ~25ms | ~2ms | Stencil ops |
+| Advection (map_coordinates) | ~60ms | ~4ms | Texture interpolation |
+| Bloom blur | ~30ms | ~2ms | Gaussian kernel |
+| Iridescent render | ~8ms | ~1ms | LUT lookup |
+| **Total** | **~120-300ms** | **~10-20ms** | |
+
+CPU currently achieves 10-15 FPS. GPU target: 30+ FPS at 1024x1024. GPU to CPU transfer for one frame: ~4ms (12MB via PCIe).
 
 ---
 
-## Suggested Build Order
+## Data Flow: Scope → CA → Scope
 
-### Milestone 1: Core Iridescence (3-5 hours)
-**Goal:** Oil-slick shimmer visible, replaces old color system
-
-1. Create `iridescent_color.py` with 5 classes (no SafeSliderManager yet)
-2. Implement ThicknessMapper (simplest component)
-3. Implement SpatialGradient with fixed parameters (angle=45°, wavelength=1.5)
-4. Implement HueSweep (copy from ColorLayerSystem)
-5. Implement ThinFilmRenderer (core physics, ~50 lines)
-6. Implement RGBTint (simple gains)
-7. Wire into viewer.py as toggle option (keep old system for comparison)
-8. Validate: organism shows rainbow shimmer, hue rotates slowly
-9. Performance check: <22ms/frame at 1024²
-
-**Deliverable:** Iridescent rendering works, visually distinct from old system
+```
+Scope scheduler (each frame)
+    │
+    ↓  __call__(prompt="", **kwargs)
+CAPipeline
+    │  reads: preset, speed, hue, brightness, flow_*, thickness from kwargs
+    │
+    ↓  set_runtime_params(**runtime)
+CASimulator
+    │  updates: LFO bases, flow strengths, iridescent hue/brightness
+    │
+    ↓  step(dt)
+    │
+    ├── LFO systems: lfo.update(dt) → modulated params
+    ├── engine.set_params(**modulated)
+    ├── for _ in speed_accumulator steps:
+    │       engine.step()                    ← numpy or CuPy
+    │       _advect(engine.world)            ← map_coordinates (numpy/CuPy)
+    │       engine.world *= _containment     ← element-wise mul
+    │       _apply_noise_and_stir()          ← noise pool + stir field
+    ├── _manage_coverage()                   ← check mass, reseed if dead
+    │
+    ↓  render_float(dt)
+IridescentPipeline
+    ├── compute_signals(world)               ← edges, velocity
+    ├── compute_color_parameter(...)         ← weighted blend → t [0,1]
+    ├── t_buffer += color_offset             ← spatial zones
+    ├── _advance_hue_lfo(lfo_phase, dt)      ← hue cycling
+    ├── LUT lookup (2D LUT, cached)          ← t×alpha → uint8 RGB
+    ↓  returns (H, W, 3) float32 [0, 1]
+    │
+    ↓  GPU→CPU transfer if CuPy (.get())
+    │
+    ↓  torch.from_numpy().unsqueeze(0)      ← (H, W, 3) → (1, H, W, 3)
+    │
+    ↓  THWC tensor [0, 1] → Scope
+Scope feeds into Krea Realtime + LoRAs
+```
 
 ---
 
-### Milestone 2: UI + Safe Sliders (2-3 hours)
-**Goal:** User controls finalized, parameter changes safe
+## Build Order and Dependencies
 
-1. Remove old layer weight sliders from control panel
-2. Add new sliders:
-   - RGB tint: R gain [0, 2], G gain [0, 2], B gain [0, 2]
-   - Brightness [0.5, 2.0]
-   - Gradient angle [0, 360] degrees
-   - Gradient wavelength [0.5, 3.0]
-3. Implement SafeSliderManager
-4. Integrate into viewer._make_param_callback()
-5. Test: rapidly move mu slider → organism should NOT die
-6. Test: switch presets → no drift artifacts
+### Phase 2A: Extract CASimulator (prerequisite for everything)
 
-**Deliverable:** Safe slider architecture validated, UI simplified
+Extract simulation logic from `viewer.py` into `simulator.py`. This is a refactor with no new functionality.
 
----
+**Dependencies:** None — pure extraction.
+**Test:** `python -m cellular_automata coral` still works identically after extraction.
+**Definition of done:** `CASimulator` instantiates, `render_float()` returns correct array, viewer delegates to it.
 
-### Milestone 3: Parameter Tuning (1-2 hours)
-**Goal:** Visual quality polished
+### Phase 2B: Write Scope Plugin (depends on 2A)
 
-1. Tune thickness range (min_nm, max_nm) for best colors on Coral preset
-2. Tune spatial gradient defaults (angle, wavelength, amplitude)
-3. Tune smoothing time constant (balance responsiveness vs safety)
-4. Validate on all remaining presets (Orbium, Cardiac Waves, Mitosis)
+Create `plugin.py` and `pipeline.py`. Wire `CAPipeline` to `CASimulator`.
 
-**Deliverable:** Visually stunning across all presets
+**Dependencies:** Phase 2A complete, CASimulator has `render_float()`.
+**Test:** Install plugin with `uv run daydream-scope install .`, verify it appears in Scope UI.
+**Definition of done:** Scope UI shows "cellular_automata" pipeline, selecting it produces video frames.
+
+### Phase 2C: Wire Runtime Params (depends on 2B)
+
+Map all Scope kwargs through `set_runtime_params()`. Verify Scope sliders update live.
+
+**Dependencies:** Phase 2B working.
+**Test:** Move Scope speed slider → organism visibly speeds up. Move hue slider → colors shift.
+**Definition of done:** All 4 runtime param categories (speed, hue/brightness, flow, preset) update without pipeline restart.
+
+### Phase 3A: Backend Module (depends on 2A, prerequisite for 3B)
+
+Create `backend.py` with conditional numpy/CuPy import. Update all engine files to `from .backend import np`.
+
+**Dependencies:** Phase 2A (CASimulator extracted, clear import structure).
+**Test:** On CPU machine, `backend.py` returns numpy. On GPU machine (RunPod), returns CuPy.
+**Definition of done:** All engines and simulator work unchanged with numpy backend.
+
+### Phase 3B: Port Engines to Backend (depends on 3A)
+
+Verify each engine's `step()` works with CuPy. Fix any non-portable operations.
+
+**Dependencies:** Phase 3A.
+**Critical items to check:**
+- `np.fft.rfft2` in Lenia — CuPy is identical
+- `map_coordinates` in advection — cupyx.scipy.ndimage is identical
+- `np.random.randn` in noise pool — CuPy is identical
+- `np.ogrid` in field builders — CuPy is identical
+- Any calls to `scipy.ndimage.maximum_filter` in `_dilate_world` — use `cupyx.scipy.ndimage.maximum_filter`
+
+**Test:** Enable CuPy backend on RunPod, run 100 frames, verify same visual output as CPU.
+
+### Phase 4: RunPod Deployment (depends on Phases 2 + 3)
+
+**Dependencies:** Scope plugin installed (Phase 2), CuPy backend working (Phase 3).
+**Steps:**
+1. Build container with CuPy + scipy + the CA plugin installed
+2. Start RunPod pod (RTX 5090)
+3. `daydream-scope install cellular_automata`
+4. Select CA pipeline in Scope, verify frames flow to Krea Realtime
+5. Performance profile: confirm 30+ FPS at 1024x1024
 
 ---
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Direct HSV Conversion in Hot Loop
-**What:** Converting RGB → HSV → rotate hue → RGB per-pixel
-**Why bad:** HSV conversion involves conditionals (slow in numpy)
-**Cost:** ~15-20ms added latency (exceeds budget)
-**Instead:** Use rotation matrix method in ThinFilmRenderer._rotate_hue()
+### Anti-Pattern 1: Making plugin.py Import pygame
 
-### Anti-Pattern 2: Spectral Integration
-**What:** Integrate interference over full visible spectrum (380-750nm, 100+ samples)
-**Why bad:** 100× compute cost for marginal visual gain
-**Cost:** ~200ms/frame (completely unacceptable)
-**Instead:** Sample 3 wavelengths (R, G, B) — adequate for display
+**What people do:** Import from viewer.py in plugin.py, dragging pygame in.
+**Why wrong:** Headless Scope containers don't have a display. `pygame.init()` crashes on import in headless environments.
+**Instead:** `plugin.py` imports only from `pipeline.py`. `pipeline.py` imports only from `simulator.py`. `viewer.py` is never imported by the plugin chain.
 
-### Anti-Pattern 3: Slider Values Applied Instantly
-**What:** `self.engine.set_params(mu=slider_value)` without smoothing
-**Why bad:** Abrupt parameter jump can violate engine stability conditions → death spiral
-**Example:** Lenia mu jump from 0.12 to 0.20 → all cells die instantly
-**Instead:** Use SafeSliderManager with EMA smoothing (0.3-0.5s time constant)
+### Anti-Pattern 2: Storing Runtime Params in __init__
 
-### Anti-Pattern 4: Global State in Renderer
-**What:** ThinFilmRenderer stores world state or previous frames
-**Why bad:** Violates single-responsibility, complicates reset logic
-**Instead:** Renderer is pure function: thickness → RGB (stateless except pre-allocated buffers)
+**What people do:**
+```python
+# WRONG
+class CAPipeline:
+    def __init__(self, speed=1.0, hue=0.25, ...):
+        self.speed = speed   # Stored in init
+    def __call__(self, **kwargs):
+        # Uses self.speed from init — never updates
+```
+**Why wrong:** Scope UI sliders call `__call__(**kwargs)` each frame. If params are stored in `__init__`, Scope can only change them by reloading the pipeline.
+**Instead:** Always read from `kwargs` in `__call__`. Document this pattern explicitly.
 
-### Anti-Pattern 5: Per-Pixel Python Loops
-**What:** `for i in range(H): for j in range(W): rgb[i,j] = compute_color(...)`
-**Why bad:** Python loop overhead is ~1000× slower than vectorized numpy
-**Cost:** ~10 seconds/frame (!)
-**Instead:** Vectorized numpy operations on entire array at once
+### Anti-Pattern 3: Parallelizing numpy + CuPy Code Paths
 
----
+**What people do:** Duplicate every engine method with `if use_gpu: cupy_version() else: numpy_version()`.
+**Why wrong:** Doubles maintenance burden. Any algorithm change requires two edits. Divergence is inevitable.
+**Instead:** Single backend abstraction (`backend.py`). The API difference between numpy and CuPy is near-zero for all operations used here.
 
-## Scalability Considerations
+### Anti-Pattern 4: Full GPU→CPU Transfer Every Frame
 
-| Concern | Current (1024²) | If 2048² | If 512² |
-|---------|----------------|----------|---------|
-| **Thickness mapping** | 2ms | 8ms | 0.5ms |
-| **Spatial gradient** | 3ms | 12ms | 0.8ms |
-| **Thin-film render** | 12ms | 48ms | 3ms |
-| **RGB tint** | 2ms | 8ms | 0.5ms |
-| **Total** | ~20ms | ~76ms | ~5ms |
+**What people do:** `frame_cpu = cupy_array.get()` called multiple times per frame (once for iridescent pipeline, once for advection, once for bloom...).
+**Why wrong:** PCIe transfer costs ~4ms per 12MB. Multiple transfers per frame: ~20ms overhead, killing GPU gains.
+**Instead:** Keep all intermediate buffers on GPU. Transfer to CPU exactly once per frame at the end of `render_float()`.
 
-**Notes:**
-- Rendering cost scales O(N²) with grid size (expected for pixel operations)
-- 2048² exceeds real-time budget (76ms > 60fps) → need optimization if upscaling
-- 512² well within budget → comfortable for faster systems
+### Anti-Pattern 5: Hard-Coding sim_size=1024
 
-**Optimization paths if needed:**
-1. **Downsample-render-upsample:** Render at 512², bilinear upsample to 1024² → saves ~15ms
-2. **LUT approach:** Pre-compute thickness→RGB lookup table → saves ~5-8ms but less flexible
-3. **Numba JIT:** Compile ThinFilmRenderer with @numba.jit → ~2-3× speedup possible
+**What people do:** Hardcode resolution in pipeline for simplicity.
+**Why wrong:** GS runs at 512 for performance. The user should be able to choose. The `sim_size` load-time param already handles this.
+**Instead:** Expose `sim_size` as a load-time param with choices [512, 1024]. CASimulator's `_apply_preset()` already handles per-engine size selection (`gray_scott` → 512, others → 1024).
 
----
+### Anti-Pattern 6: torch.from_numpy on cupy Arrays
 
-## Open Questions for Phase-Specific Research
-
-These questions don't need answers NOW, but will need investigation during implementation:
-
-1. **Thickness range:** What [min_nm, max_nm] produces the richest colors for Lenia organisms?
-   - Hypothesis: 200-800nm based on physics, but may need tuning for aesthetics
-   - Research needed: Empirical testing on Coral preset
-
-2. **Spatial gradient patterns:** Should gradient be pure sine wave, or multi-scale noise?
-   - Hypothesis: Sine wave sufficient for MVP, Perlin noise for advanced shimmer
-   - Research needed: User preference testing
-
-3. **Hue rotation speed:** Keep 2.5 deg/s from old system, or slower?
-   - Project context says "slower LFO overall" — applies to hue sweep too?
-   - Research needed: User feedback on rotation speed
-
-4. **Smoothing time constant:** 0.3s vs 0.5s vs 1.0s for slider safety?
-   - Trade: faster response vs more protection
-   - Research needed: Stability testing with abrupt slider changes
-
-5. **Feedback integration:** Does iridescence system need feedback into engine?
-   - Old system had feedback coefficient — needed for iridescence?
-   - Research needed: Test if organism evolves better with/without feedback
+**What people do:**
+```python
+tensor = torch.from_numpy(cupy_array)  # CRASHES — cupy is not numpy
+```
+**Why wrong:** `torch.from_numpy()` only accepts numpy arrays.
+**Instead:** Always `.get()` first if on GPU:
+```python
+arr = frame  # cupy array
+if hasattr(arr, 'get'):
+    arr = arr.get()  # → numpy
+tensor = torch.from_numpy(arr)
+```
 
 ---
 
-## Performance Validation Checklist
+## Integration Points
 
-Before declaring architecture complete:
+### Scope ↔ CA Pipeline
 
-- [ ] ThinFilmRenderer runs in <12ms @ 1024² (measured with time.perf_counter)
-- [ ] Total render pipeline <22ms @ 1024² (matches current baseline)
-- [ ] No frame drops during slider manipulation
-- [ ] No memory leaks over 10min continuous run (memory usage stable)
-- [ ] SafeSliderManager prevents organism death when mu slider jerked ±50%
-- [ ] Visual quality comparable to reference (oil slick / soap bubble shimmer)
+| Scope expects | CA provides | Where |
+|---------------|-------------|-------|
+| `register_pipelines(registry)` hook | `plugin.py::register_pipelines()` | Entry point |
+| `pipeline_class` with `__call__(**kwargs)` | `CAPipeline.__call__()` | `pipeline.py` |
+| `__call__` returns THWC tensor | `torch.Tensor (1, H, W, 3) in [0,1]` | `pipeline.py` |
+| `ui_field_config()` classmethod | `CAPipeline.ui_field_config()` | `pipeline.py` |
+| pyproject.toml entry point | `[project.entry-points."scope"]` | `pyproject.toml` |
+| No `prepare()` for text-only | CAPipeline has no `prepare()` | By omission |
+
+### Existing CA Code ↔ New Simulator
+
+| CASimulator calls | Lives in | Status |
+|-------------------|----------|--------|
+| `Lenia()`, `SmoothLife()`, `MNCA()`, `GrayScott()` | engine files | Ready |
+| `IridescentPipeline()` | `iridescent.py` | Ready — add `render_float()` |
+| `LeniaLFOSystem()` etc. | `smoothing.py` | Ready — move from viewer.py |
+| `SmoothedParameter()` | `smoothing.py` | Ready |
+| `get_preset()` | `presets.py` | Ready |
+| `gaussian_filter`, `map_coordinates`, `zoom` | scipy/CuPy | Already import-guarded |
+| `np.fft.rfft2` | Lenia.step() | Will port to backend.np |
+
+### Viewer ↔ CASimulator (post-refactor)
+
+```python
+class Viewer:
+    def __init__(self, preset="coral"):
+        self.sim = CASimulator(preset_key=preset)
+
+    def run(self):
+        pygame.init()
+        # ... setup ...
+        while self.running:
+            # ... event handling ...
+            if not self.paused:
+                dt = clock.get_time() / 1000.0
+                self.sim.set_runtime_params(**self._collect_slider_values())
+                rgb_u8 = self.sim.step(dt)  # (H, W, 3) uint8
+                surface = pygame.surfarray.make_surface(rgb_u8.swapaxes(0, 1))
+                # ... display ...
+```
 
 ---
 
 ## Sources
 
-### Thin-Film Interference Physics
-- [Wikipedia: Thin-film interference](https://en.wikipedia.org/wiki/Thin-film_interference) — core formulas
-- [Physics LibreTexts: Thin Film Interference](https://phys.libretexts.org/Bookshelves/University_Physics/Calculus-Based_Physics_(Schnick)/Volume_B:_Electricity_Magnetism_and_Optics/B24:_Thin_Film_Interference) — optical path equations
-- [OpenStax: Interference in Thin Films](https://openstax.org/books/university-physics-volume-3/pages/3-4-interference-in-thin-films) — constructive/destructive conditions
+- `plugins/example_plugin/pipeline.py` — Scope pipeline interface (THWC, kwargs, ui_field_config)
+- `plugins/example_plugin/pyproject.toml` — Entry point format verified
+- `plugins/cellular_automata/viewer.py` — Extraction boundary analyzed
+- `plugins/cellular_automata/iridescent.py` — Confirmed pygame-free, returns uint8
+- `plugins/cellular_automata/engine_base.py` — Confirmed pure numpy
+- CuPy documentation: CuPy provides near-identical API to numpy; cupyx.scipy.ndimage mirrors scipy.ndimage for all functions used (gaussian_filter, zoom, map_coordinates)
+- Scope plugin contract: text-only pipeline omits `prepare()`, returns THWC float32 tensor
 
-### Shader Implementations (adapted for CPU)
-- [Alan Zucconi: Car Paint Shader - Thin-Film Interference](https://www.alanzucconi.com/2017/10/27/carpaint-shader-thin-film-interference/) — simplified cosine model
-- [Shadertoy: Fast Thin-Film Interference](https://www.shadertoy.com/view/ld3SDl) — GPU implementation reference
-- [Jelly Renders: Rendering a Simple Iridescent Material](https://jellyrenders.com/graphics/ray%20tracing/2025/11/17/simple-iridescent-material/) — angle-dependent phase calculation
-- [Blender Projects: Cycles Thin Film Iridescence PR](https://projects.blender.org/blender/blender/pulls/118477) — production renderer approach
-
-### Safe Parameter Control
-- [MathWorks: Parameter Smoother Block](https://www.mathworks.com/help/dsp/ref/parametersmoother.html) — EMA smoothing for live parameters
-- [Wikipedia: Exponential Smoothing](https://en.wikipedia.org/wiki/Exponential_smoothing) — mathematical foundation
-- [Medium: Six Approaches to Time Series Smoothing](https://medium.com/@dmitriy.bolotov/six-approaches-to-time-series-smoothing-cc3ea9d6b64f) — EMA vs alternatives
-
-### NumPy Performance
-- [NumPy Gradient Documentation](https://numpy.org/doc/stable/reference/generated/numpy.gradient.html) — spatial field operations
-- [Python 2025: Performance Optimization Guide](https://blog.madrigan.com/en/blog/202602091505/) — vectorization best practices
+---
+*Architecture research for: Scope plugin integration + CuPy GPU port*
+*Researched: 2026-02-17*

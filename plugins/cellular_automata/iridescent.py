@@ -276,6 +276,19 @@ class IridescentPipeline:
 
         return self.display_buffer
 
+    def render_float(self, world, dt, lfo_phase=None, color_weights=None, t_offset=None):
+        """Render and return (H, W, 3) float32 [0, 1].
+
+        Thin wrapper over render() that converts uint8 output to float32.
+        Creates a new array (caller owns the data; display_buffer is reused each frame).
+
+        Args: same as render()
+        Returns: (H, W, 3) float32 array in [0, 1]
+        """
+        rgb_uint8 = self.render(world, dt, lfo_phase=lfo_phase,
+                                color_weights=color_weights, t_offset=t_offset)
+        return rgb_uint8.astype(np.float32) / 255.0
+
     def set_hue_offset(self, hue):
         """Map single 0-1 hue value to RGB tint via cosine color wheel.
 

@@ -119,7 +119,7 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
 try:
     from pydantic import Field
     from scope.core.pipelines.base_schema import (
-        BasePipelineConfig, ModeDefaults, ui_field_config,
+        BasePipelineConfig, ModeDefaults, UsageType, ui_field_config,
     )
     from scope.core.pipelines.interface import Pipeline
     _HAS_SCOPE_API = True
@@ -137,7 +137,8 @@ if _HAS_SCOPE_API:
             "Bioluminescent cellular automata organism as video source"
         )
         supports_prompts = False
-        modes = {"text": ModeDefaults(default=True)}
+        usage = [UsageType.PREPROCESSOR]
+        modes = {"video": ModeDefaults(default=True)}
 
         # Load-time
         sim_size: int = Field(
@@ -174,12 +175,76 @@ if _HAS_SCOPE_API:
             json_schema_extra=ui_field_config(order=6, label="Reseed"),
         )
 
+    from scope.core.pipelines.interface import Requirements as _Requirements
+
     class CAPipeline(Pipeline):
         """Formal Scope pipeline using BasePipelineConfig + Pipeline ABC."""
 
         @classmethod
         def get_config_class(cls):
             return CAPipelineConfig
+
+        def prepare(self, **kwargs):
+            """Declare video input so Scope treats CA as a valid preprocessor.
+
+            The actual video input is ignored — CA generates its own frames.
+            This allows CA to appear in the Preprocessor dropdown for pipelines
+            like krea-realtime-video, enabling the chain: CA → Krea RT + LoRAs.
+            """
+            return _Requirements(input_size=1)
+
+        __init__ = _ca_init
+        __call__ = _ca_call
+
+    # ── Standalone preview pipeline (appears in Pipeline ID dropdown) ──
+
+    class CAPreviewConfig(BasePipelineConfig):
+        pipeline_id = "cellular-automata-preview"
+        pipeline_name = "CA Preview"
+        pipeline_description = "Raw cellular automata output (no AI processing)"
+        supports_prompts = False
+        # No usage set → appears as standalone pipeline in Pipeline ID dropdown
+        modes = {"text": ModeDefaults(default=True)}
+
+        sim_size: int = Field(
+            default=512,
+            description="Simulation grid resolution",
+            json_schema_extra=ui_field_config(
+                order=1, label="Sim Resolution", is_load_param=True,
+            ),
+        )
+        preset: str = Field(
+            default="coral",
+            description="CA preset to run",
+            json_schema_extra=ui_field_config(order=1, label="Preset"),
+        )
+        speed: float = Field(
+            default=1.0, ge=0.5, le=5.0,
+            json_schema_extra=ui_field_config(order=2, label="Speed"),
+        )
+        hue: float = Field(
+            default=0.25, ge=0.0, le=1.0,
+            json_schema_extra=ui_field_config(order=3, label="Hue"),
+        )
+        brightness: float = Field(
+            default=1.0, ge=0.1, le=3.0,
+            json_schema_extra=ui_field_config(order=4, label="Brightness"),
+        )
+        thickness: float = Field(
+            default=0.0, ge=0.0, le=20.0,
+            json_schema_extra=ui_field_config(order=5, label="Thickness"),
+        )
+        reseed: bool = Field(
+            default=False,
+            json_schema_extra=ui_field_config(order=6, label="Reseed"),
+        )
+
+    class CAPreviewPipeline(Pipeline):
+        """Standalone pipeline for previewing raw CA output."""
+
+        @classmethod
+        def get_config_class(cls):
+            return CAPreviewConfig
 
         __init__ = _ca_init
         __call__ = _ca_call

@@ -13,12 +13,20 @@ except ImportError:
 
 from .pipeline import CAPipeline
 
+# CAPreviewPipeline only exists when Scope API is available
+try:
+    from .pipeline import CAPreviewPipeline
+except ImportError:
+    CAPreviewPipeline = None
+
 
 if hookimpl is not None:
     @hookimpl
     def register_pipelines(register):
         """Called when Scope loads the plugin (formal @hookimpl API)."""
         register(CAPipeline)
+        if CAPreviewPipeline is not None:
+            register(CAPreviewPipeline)
 else:
     def register_pipelines(registry):
         """Called when Scope loads the plugin (simple registry API)."""

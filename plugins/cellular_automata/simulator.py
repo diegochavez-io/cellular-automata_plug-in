@@ -318,7 +318,7 @@ class CASimulator:
         sim_size: Simulation grid size in pixels (e.g. 512 or 1024)
     """
 
-    def __init__(self, preset_key="coral", sim_size=1024):
+    def __init__(self, preset_key="coral", sim_size=1024, warmup=True):
         self.sim_size = sim_size
         self.res_scale = sim_size / BASE_RES
 
@@ -388,6 +388,10 @@ class CASimulator:
 
         # Hue state (for GS emboss render)
         self._hue_value = 0.25
+
+        # Warmup flag: when False, _apply_preset skips warmup steps.
+        # CAPipeline passes warmup=False for fast plugin load.
+        self._warmup = warmup
 
         # Create engine and apply preset
         self._apply_preset(self.preset_key)
@@ -659,6 +663,19 @@ class CASimulator:
         """
         rgb_uint8 = self.step(dt)
         return rgb_uint8.astype(np.float32) / 255.0
+
+    def run_warmup(self):
+        """Run engine-specific warmup steps.
+
+        Called by CAPipeline on first __call__() when constructed with warmup=False.
+        Also safe to call after apply_preset() if warmup was skipped.
+        """
+        if self.engine_name == "lenia":
+            for _ in range(200):
+                self.engine.step()
+        elif self.engine_name == "gray_scott":
+            for _ in range(1000):
+                self.engine.step()
 
     # -----------------------------------------------------------------------
     # Field construction
@@ -1075,12 +1092,13 @@ class CASimulator:
         self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
 
         # Warmup: pre-run steps so first frames show developed structure.
-        if new_engine_name == "lenia":
-            for _ in range(200):
-                self.engine.step()
-        elif new_engine_name == "gray_scott":
-            for _ in range(1000):
-                self.engine.step()
+        if self._warmup:
+            if new_engine_name == "lenia":
+                for _ in range(200):
+                    self.engine.step()
+            elif new_engine_name == "gray_scott":
+                for _ in range(1000):
+                    self.engine.step()
 
         # Reset iridescent pipeline and speed
         self.iridescent.reset(self.sim_size)

@@ -49,7 +49,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Create simulator.py with CASimulator class + IridescentPipeline.render_float()
+- [x] 03-01-PLAN.md — Create simulator.py with CASimulator class + IridescentPipeline.render_float()
 - [ ] 03-02-PLAN.md — Refactor viewer.py to thin wrapper + simplify __main__.py snap()
 
 ### Phase 4: Scope Plugin Wrapper
@@ -119,11 +119,11 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. LFO Smoothing | 1/1 | Complete | 2026-02-16 |
 | 2. Iridescent Color Pipeline | 2/2 | Complete | 2026-02-16 |
-| 3. Extract CASimulator | 0/2 | Planned | - |
+| 3. Extract CASimulator | 1/2 | In Progress | - |
 | 4. Scope Plugin Wrapper | 0/TBD | Not started | - |
 | 5. CuPy GPU Acceleration | 0/TBD | Not started | - |
 | 6. RunPod Deployment | 0/TBD | Not started | - |
 
 ---
 *Created: 2026-02-16*
-*Updated: 2026-02-17 — v2.0 Scope Deployment milestone (phases 3-6)*
+*Updated: 2026-02-18 — Phase 3 plan 03-01 complete (CASimulator extracted)*

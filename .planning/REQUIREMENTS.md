@@ -67,25 +67,25 @@ Extract simulation logic from `viewer.py` into a clean `CASimulator` class for h
 
 Wrap CASimulator as a Scope text-only pipeline plugin.
 
-- [ ] **PLUG-01: Plugin Registration** — `plugin.py` with `@hookimpl` decorated `register_pipelines(register)` from `scope.core.plugins.hookspecs`. Calls `register(CAPipeline)`.
+- [x] **PLUG-01: Plugin Registration** — `plugin.py` with `@hookimpl` decorated `register_pipelines(register)` from `scope.core.plugins.hookspecs`. Calls `register(CAPipeline)`.
 
-- [ ] **PLUG-02: Pipeline Config Schema** — Pydantic config inheriting `BasePipelineConfig`: `pipeline_id="cellular-automata"`, `pipeline_name="Cellular Automata"`, `supports_prompts=False`, `modes={"text": ModeDefaults(default=True)}`. Load-time field: `sim_size`. Runtime fields: `preset` (enum), `speed` (slider), `hue` (slider), `brightness` (slider), `thickness` (slider), `reseed` (toggle). Each field uses `json_schema_extra=ui_field_config(...)`.
+- [x] **PLUG-02: Pipeline Config Schema** — Pydantic config inheriting `BasePipelineConfig`: `pipeline_id="cellular-automata"`, `pipeline_name="Cellular Automata"`, `supports_prompts=False`, `modes={"text": ModeDefaults(default=True)}`. Load-time field: `sim_size`. Runtime fields: `preset` (enum), `speed` (slider), `hue` (slider), `brightness` (slider), `thickness` (slider), `reseed` (toggle). Each field uses `json_schema_extra=ui_field_config(...)`.
 
-- [ ] **PLUG-03: Pipeline Class** — `CAPipeline` inheriting `scope.core.pipelines.interface.Pipeline`. Implements `get_config_class()` and `__call__(**kwargs) → {"video": tensor}`. Creates CASimulator in `__init__()`.
+- [x] **PLUG-03: Pipeline Class** — `CAPipeline` inheriting `scope.core.pipelines.interface.Pipeline`. Implements `get_config_class()` and `__call__(**kwargs) → {"video": tensor}`. Creates CASimulator in `__init__()`.
 
-- [ ] **PLUG-04: Runtime kwargs** — ALL user-controllable params read from `kwargs` in `__call__()` every frame. Never stored in `__init__()`. Preset changes trigger `simulator.apply_preset()`.
+- [x] **PLUG-04: Runtime kwargs** — ALL user-controllable params read from `kwargs` in `__call__()` every frame. Never stored in `__init__()`. Preset changes trigger `simulator.apply_preset()`.
 
-- [ ] **PLUG-05: THWC Tensor Output** — Returns `{"video": tensor}` where tensor is `torch.Tensor (1, H, W, 3) float32 [0,1]`. Conversion: `render_float()` → `.copy()` → `torch.from_numpy()` → `.unsqueeze(0)`.
+- [x] **PLUG-05: THWC Tensor Output** — Returns `{"video": tensor}` where tensor is `torch.Tensor (1, H, W, 3) float32 [0,1]`. Conversion: `render_float()` → `.copy()` → `torch.from_numpy()` → `.unsqueeze(0)`.
 
-- [ ] **PLUG-06: Wall-Clock dt** — Track elapsed time between `__call__()` using `time.perf_counter()`. Pass dt to CASimulator for rate-independent LFO/speed. Clamp to `[0.001, 0.1]`.
+- [x] **PLUG-06: Wall-Clock dt** — Track elapsed time between `__call__()` using `time.perf_counter()`. Pass dt to CASimulator for rate-independent LFO/speed. Clamp to `[0.001, 0.1]`.
 
-- [ ] **PLUG-07: pyproject.toml** — Entry point `[project.entry-points."scope"]` → `cellular_automata.plugin`. Dependencies: numpy, scipy, torch. NO pygame. Build: hatchling. Excludes viewer.py, controls.py, __main__.py from wheel.
+- [x] **PLUG-07: pyproject.toml** — Entry point `[project.entry-points."scope"]` → `cellular_automata.plugin`. Dependencies: numpy, scipy, torch. NO pygame. Build: hatchling. Excludes viewer.py, controls.py, __main__.py from wheel.
 
-- [ ] **PLUG-08: Warmup Strategy** — Engine warmup deferred out of `__init__()` (first `__call__()` or background thread). Plugin loads instantly.
+- [x] **PLUG-08: Warmup Strategy** — Engine warmup deferred out of `__init__()` (first `__call__()` or background thread). Plugin loads instantly.
 
 - [ ] **PLUG-09: Install and Test** — `uv run daydream-scope install .` succeeds. Pipeline appears in Scope UI. Slider controls update output live.
 
-- [ ] **PLUG-10: No pygame in Import Chain** — plugin.py → pipeline.py → simulator.py → engines/iridescent/presets/smoothing: zero pygame imports. viewer.py and controls.py excluded from installed package.
+- [x] **PLUG-10: No pygame in Import Chain** — plugin.py → pipeline.py → simulator.py → engines/iridescent/presets/smoothing: zero pygame imports. viewer.py and controls.py excluded from installed package.
 
 ### Category 3: CuPy GPU Acceleration
 

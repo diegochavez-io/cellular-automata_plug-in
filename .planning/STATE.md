@@ -9,14 +9,14 @@ See: .planning/PROJECT.md (updated 2026-02-17)
 
 ## Current Position
 
-Phase: 3 of 6 - Extract CASimulator
-Plan: 2 of 2 (03-01 complete, 03-02 complete)
-Status: Phase 3 complete — CASimulator extracted, viewer delegating, snap() simplified
-Last activity: 2026-02-18 — Plan 03-02 executed (viewer.py refactored to thin pygame wrapper)
+Phase: 4 of 6 - Scope Plugin Wrapper
+Plan: 1 of 2 (04-01 complete)
+Status: Phase 4, Plan 1 complete — plugin package created (pyproject.toml, plugin.py, pipeline.py, warmup support)
+Last activity: 2026-02-18 — Plan 04-01 executed (Scope plugin wrapper: pyproject.toml, plugin.py, pipeline.py)
 
 ## Progress
 
-[████░░░░░░] 40% — Phase 3 complete (2 of 2 plans done)
+[█████░░░░░] 50% — Phase 4 Plan 1 complete (1 of 2 plans in phase 4)
 
 ## Accumulated Context
 
@@ -39,6 +39,10 @@ Last activity: 2026-02-18 — Plan 03-02 executed (viewer.py refactored to thin 
 - viewer.py is a thin pygame wrapper: self.simulator = CASimulator(preset, sim_size); run loop calls self.simulator.step(dt)
 - ENGINE_LABELS kept in viewer.py (display-only, not simulation logic)
 - FLOW_SLIDER_DEFS kept in viewer.py (panel layout config, not sim logic)
+- Dual-pattern Scope API: try BasePipelineConfig+Pipeline ABC, fall back to plain class — single codebase works in Scope and bare Python
+- Deferred warmup: CASimulator(warmup=False) in __init__, run_warmup() fires on first __call__() — plugin loads instantly
+- Shared _ca_init/_ca_call module-level helpers used as class method bodies in both branches
+- _PRESET_CHOICES lists all 23 headless-safe presets by internal key for Scope UI
 
 ### Pending Todos
 
@@ -51,5 +55,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-18
-Stopped at: Completed 03-02-PLAN.md (viewer.py refactored). Phase 3 complete. Next: Phase 4 — Scope plugin wrapper.
+Stopped at: Completed 04-01-PLAN.md (Scope plugin wrapper files created). Next: 04-02-PLAN.md.
 Resume file: None

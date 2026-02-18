@@ -121,7 +121,7 @@ Plans:
 | 1. LFO Smoothing | 1/1 | Complete | 2026-02-16 |
 | 2. Iridescent Color Pipeline | 2/2 | Complete | 2026-02-16 |
 | 3. Extract CASimulator | 2/2 | Complete | 2026-02-18 |
-| 4. Scope Plugin Wrapper | 0/TBD | Not started | - |
+| 4. Scope Plugin Wrapper | 1/2 | In Progress|  |
 | 5. CuPy GPU Acceleration | 0/TBD | Not started | - |
 | 6. RunPod Deployment | 0/TBD | Not started | - |
 

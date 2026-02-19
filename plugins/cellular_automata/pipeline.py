@@ -10,9 +10,99 @@ Uses BasePipelineConfig + Pipeline ABC when Scope's formal API is available
 
 import enum
 import time
+import threading
+import io
 import torch
 import numpy as np
-from .simulator import CASimulator
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from .simulator import CASimulator, FLOW_KEYS
+from .presets import PRESETS
+
+
+# ── MJPEG Preview Server (raw CA output on port 8080) ────────────────────
+# Opens in a second browser tab so you can see what the CA is generating
+# before Krea transforms it. Runs as a daemon thread alongside Scope.
+
+_mjpeg_server = None  # Module-level singleton
+
+_PREVIEW_HTML = b'''<!DOCTYPE html>
+<html><head><title>CA Preview</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; display:flex; justify-content:center;
+       align-items:center; height:100vh; overflow:hidden; }
+img { max-width:100vw; max-height:100vh; object-fit:contain; }
+.label { position:fixed; top:12px; left:16px; color:#555;
+         font:13px/1 monospace; pointer-events:none; }
+</style></head>
+<body>
+<span class="label">CA Preview (raw input)</span>
+<img src="/stream">
+</body></html>'''
+
+
+class _MJPEGHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/stream':
+            self.send_response(200)
+            self.send_header('Content-Type',
+                             'multipart/x-mixed-replace; boundary=frame')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            while True:
+                try:
+                    with self.server.frame_lock:
+                        jpeg = self.server.frame_jpeg
+                    if jpeg:
+                        header = (b'--frame\r\nContent-Type: image/jpeg\r\n'
+                                  b'Content-Length: ' + str(len(jpeg)).encode()
+                                  + b'\r\n\r\n')
+                        self.wfile.write(header + jpeg + b'\r\n')
+                    time.sleep(1.0 / 30)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
+        else:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.end_headers()
+            self.wfile.write(_PREVIEW_HTML)
+
+    def log_message(self, *args):
+        pass  # Silence HTTP request logs
+
+
+def _start_mjpeg_server(port=8080):
+    """Start the MJPEG preview server (singleton, idempotent)."""
+    global _mjpeg_server
+    if _mjpeg_server is not None:
+        return
+    try:
+        server = HTTPServer(('0.0.0.0', port), _MJPEGHandler)
+        server.frame_jpeg = None
+        server.frame_lock = threading.Lock()
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        _mjpeg_server = server
+        print(f"[CA] MJPEG preview started on port {port}")
+    except OSError as e:
+        print(f"[CA] MJPEG preview failed: {e}")
+
+
+def _update_mjpeg_frame(frame_np):
+    """Push a new frame to the MJPEG stream (called every render)."""
+    if _mjpeg_server is None:
+        return
+    try:
+        from PIL import Image
+        img = Image.fromarray(
+            (frame_np * 255).clip(0, 255).astype(np.uint8)
+        )
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', quality=85)
+        with _mjpeg_server.frame_lock:
+            _mjpeg_server.frame_jpeg = buf.getvalue()
+    except Exception:
+        pass
 
 # --- Preset choices: all headless-safe engine presets (internal keys) ---
 _PRESET_CHOICES = [
@@ -77,6 +167,8 @@ def _ca_init(self, sim_size: int = 512, preset: str = "coral", **kwargs):
     )
     self._warmed_up = False
     self._last_time = None
+    # Start MJPEG preview server (raw CA output on port 8080)
+    _start_mjpeg_server()
 
 
 def _ca_call(self, prompt: str = "", **kwargs) -> dict:
@@ -106,6 +198,7 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
         self._warmed_up = True
 
     # --- Read ALL runtime params from kwargs every frame (PLUG-04) ---
+    # Pydantic defaults match coral preset, so untouched sliders = coral values.
     preset = kwargs.get("preset", None)
     speed = kwargs.get("speed", 1.0)
     hue = kwargs.get("hue", 0.25)
@@ -113,13 +206,13 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     thickness = kwargs.get("thickness", 0.0)
     reseed = kwargs.get("reseed", False)
 
-    # Flow field strengths (-1 to 1)
-    flow_radial = kwargs.get("flow_radial", 0.0)
-    flow_rotate = kwargs.get("flow_rotate", 0.0)
-    flow_swirl = kwargs.get("flow_swirl", 0.0)
-    flow_bubble = kwargs.get("flow_bubble", 0.0)
+    # Flow field strengths (defaults match coral preset via Pydantic)
+    flow_radial = kwargs.get("flow_radial", -0.10)
+    flow_rotate = kwargs.get("flow_rotate", 0.40)
+    flow_swirl = kwargs.get("flow_swirl", 0.35)
+    flow_bubble = kwargs.get("flow_bubble", 0.15)
     flow_ring = kwargs.get("flow_ring", 0.0)
-    flow_vortex = kwargs.get("flow_vortex", 0.0)
+    flow_vortex = kwargs.get("flow_vortex", 0.25)
     flow_vertical = kwargs.get("flow_vertical", 0.0)
 
     # Tint RGB multipliers (applied after hue sets base tint)
@@ -169,6 +262,9 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
 
     # --- Render one frame (PLUG-05) ---
     frame_np = self.simulator.render_float(dt)  # (H, W, 3) float32 [0,1]
+
+    # Push raw CA frame to MJPEG preview (before Krea transforms it)
+    _update_mjpeg_frame(frame_np)
 
     # Convert to THWC torch tensor: (1, H, W, 3) float32
     # .copy() is required: render_float may share internal buffer memory
@@ -237,21 +333,21 @@ if _HAS_SCOPE_API:
             default=False,
             json_schema_extra=ui_field_config(order=6, label="Reseed"),
         )
-        # Flow field strengths
+        # Flow field strengths (defaults match coral preset)
         flow_radial: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=-0.10, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=10, label="Flow Radial"),
         )
         flow_rotate: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=0.40, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=11, label="Flow Rotate"),
         )
         flow_swirl: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=0.35, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=12, label="Flow Swirl"),
         )
         flow_bubble: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=0.15, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=13, label="Flow Bubble"),
         )
         flow_ring: float = Field(
@@ -259,7 +355,7 @@ if _HAS_SCOPE_API:
             json_schema_extra=ui_field_config(order=14, label="Flow Ring"),
         )
         flow_vortex: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=0.25, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=15, label="Flow Vortex"),
         )
         flow_vertical: float = Field(
@@ -308,8 +404,8 @@ if _HAS_SCOPE_API:
         pipeline_name = "CA Preview"
         pipeline_description = "Raw cellular automata output (no AI processing)"
         supports_prompts = False
-        # No usage set → appears as standalone pipeline in Pipeline ID dropdown
-        modes = {"text": ModeDefaults(default=True)}
+        # Video mode so Scope UI shows controls properly
+        modes = {"video": ModeDefaults(default=True)}
 
         sim_size: int = Field(
             default=512,
@@ -343,21 +439,21 @@ if _HAS_SCOPE_API:
             default=False,
             json_schema_extra=ui_field_config(order=6, label="Reseed"),
         )
-        # Flow field strengths
+        # Flow field strengths (defaults match coral preset)
         flow_radial: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=-0.10, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=10, label="Flow Radial"),
         )
         flow_rotate: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=0.40, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=11, label="Flow Rotate"),
         )
         flow_swirl: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=0.35, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=12, label="Flow Swirl"),
         )
         flow_bubble: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=0.15, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=13, label="Flow Bubble"),
         )
         flow_ring: float = Field(
@@ -365,7 +461,7 @@ if _HAS_SCOPE_API:
             json_schema_extra=ui_field_config(order=14, label="Flow Ring"),
         )
         flow_vortex: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
+            default=0.25, ge=-1.0, le=1.0,
             json_schema_extra=ui_field_config(order=15, label="Flow Vortex"),
         )
         flow_vertical: float = Field(
@@ -392,6 +488,12 @@ if _HAS_SCOPE_API:
         @classmethod
         def get_config_class(cls):
             return CAPreviewConfig
+
+        def prepare(self, **kwargs):
+            """Declare video input requirement so Scope UI shows properly.
+            The actual video input is ignored — CA generates its own frames.
+            """
+            return _Requirements(input_size=1)
 
         __init__ = _ca_init
         __call__ = _ca_call

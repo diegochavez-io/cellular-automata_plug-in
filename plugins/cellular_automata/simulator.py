@@ -45,6 +45,7 @@ FLOW_KEYS = ["flow_radial", "flow_rotate", "flow_swirl", "flow_bubble",
              "flow_ring", "flow_vortex", "flow_vertical"]
 
 BASE_RES = 512  # Presets are tuned for this resolution
+_TARGET_SPS = 60  # Target engine steps per second (frame-rate independent)
 
 # Engine class registry (only headless-safe engines included)
 ENGINE_CLASSES = {
@@ -318,9 +319,11 @@ class CASimulator:
         sim_size: Simulation grid size in pixels (e.g. 512 or 1024)
     """
 
-    def __init__(self, preset_key="coral", sim_size=1024, warmup=True):
+    def __init__(self, preset_key="coral", sim_size=1024, warmup=True,
+                 target_sps=_TARGET_SPS):
         self.sim_size = sim_size
         self.res_scale = sim_size / BASE_RES
+        self._target_sps = target_sps
 
         # Fractional speed system (accumulator pattern)
         self.sim_speed = 1.0
@@ -527,8 +530,13 @@ class CASimulator:
                     smoothed_vals[k] = int(smoothed_vals[k])
             self.engine.set_params(**smoothed_vals)
 
-        # --- Simulation with fractional speed accumulator ---
-        self.speed_accumulator += self.sim_speed
+        # --- Simulation with dt-based speed accumulator ---
+        # Frame-rate independent: always targets _TARGET_SPS engine steps/sec.
+        # At 60fps: ~1 step/frame.  At 20fps: ~3 steps/frame.
+        self.speed_accumulator += self.sim_speed * dt * self._target_sps
+        # Cap to prevent CPU spike after lag/pause
+        self.speed_accumulator = min(self.speed_accumulator, 4.0)
+
         while self.speed_accumulator >= 1.0:
             self.engine.step()
 
@@ -595,13 +603,19 @@ class CASimulator:
             mass = float(self.engine.world.mean())
             alive_frac = float((self.engine.world > 0.01).sum()) / self.engine.world.size
 
+            # Lenia at high res: more aggressive recovery thresholds.
+            # The organism goes through boom/bust cycles — catch collapses early.
+            _lenia_hires = (self.engine_name == "lenia" and self.sim_size >= 768)
+            _reseed_threshold = 0.005 if _lenia_hires else 0.002
+
             # Auto-reseed if organism dies (never go black)
-            if mass < 0.002:
-                preset = get_preset(self.preset_key)
-                seed_kwargs = {}
-                if "density" in preset:
-                    seed_kwargs["density"] = preset["density"]
-                self.engine.seed(preset.get("seed", "random"), **seed_kwargs)
+            if mass < _reseed_threshold:
+                if _lenia_hires:
+                    # Dense seed: large filled region that can sustain at 1024
+                    self.engine.seed("dense")
+                else:
+                    for _ in range(8):
+                        self._drop_seed_cluster()
                 # Don't reset iridescent — prevents color flash
                 if self.lfo_system:
                     self.lfo_system.reset_phase()
@@ -639,10 +653,17 @@ class CASimulator:
                     self._drop_seed_cluster()
                     self._stagnant_frames = 0
 
-            # Nucleation: only when truly dead (< 2%), drop a cluster
-            if self.engine_name != "gray_scott" and alive_frac < 0.02:
+            # Nucleation: Lenia at high res uses dense reseed below 3%.
+            # Other engines use cluster drops below 5%.
+            if _lenia_hires and alive_frac < 0.03:
                 self._nucleation_counter += 1
-                if self._nucleation_counter >= 30:
+                if self._nucleation_counter >= 15:
+                    self._nucleation_counter = 0
+                    self.engine.seed("dense")
+            elif self.engine_name != "gray_scott" and alive_frac < 0.05:
+                self._nucleation_counter += 1
+                interval = 15 if alive_frac < 0.01 else 30
+                if self._nucleation_counter >= interval:
                     self._nucleation_counter = 0
                     self._drop_seed_cluster()
 
@@ -665,17 +686,82 @@ class CASimulator:
         return rgb_uint8.astype(np.float32) / 255.0
 
     def run_warmup(self):
-        """Run engine-specific warmup steps.
+        """Two-phase warmup: free growth then containment shaping.
 
-        Called by CAPipeline on first __call__() when constructed with warmup=False.
-        Also safe to call after apply_preset() if warmup was skipped.
+        Phase 1 (growth): Raw engine steps with no containment or flow,
+        matching the viewer's _apply_preset warmup. Lets the organism
+        establish structure before any forces are applied.
+
+        Phase 2 (shaping): Shorter period with containment + flow to
+        trim edges and establish flow patterns.
+
+        For Lenia at high resolution (>=768), uses "dense" seed type
+        which creates a large filled region (radius=size//3, density=0.8).
+        The default "blobs" seed creates tiny scattered clusters that
+        collapse at 1024 before the organism can establish.
+
+        Auto-reseed in both phases prevents organism death.
+        Rendering is skipped (~5x speedup).
         """
         if self.engine_name == "lenia":
-            for _ in range(200):
-                self.engine.step()
+            grow_steps = 600
+            shape_steps = 200
         elif self.engine_name == "gray_scott":
-            for _ in range(1000):
-                self.engine.step()
+            grow_steps = 1000
+            shape_steps = 200
+        elif self.engine_name in ("smoothlife", "mnca"):
+            grow_steps = 100
+            shape_steps = 50
+        else:
+            grow_steps = 150
+            shape_steps = 50
+
+        preset = get_preset(self.preset_key)
+
+        # For Lenia at high res, force "dense" seed for viable initial mass.
+        # "blobs" seed creates radius=size//10 clusters that collapse at 1024.
+        # "dense" seed creates radius=size//3 region with density=0.8.
+        use_dense = (self.engine_name == "lenia" and self.sim_size >= 768)
+        if use_dense:
+            self.engine.seed("dense")
+
+        # Phase 1: Free growth (no containment, no flow) — let organism establish
+        for _ in range(grow_steps):
+            self.engine.step()
+            mass = float(self.engine.world.mean())
+            if mass < 0.002:
+                if use_dense:
+                    self.engine.seed("dense")
+                elif preset:
+                    seed_kw = {}
+                    if "density" in preset:
+                        seed_kw["density"] = preset["density"]
+                    self.engine.seed(preset.get("seed", "random"), **seed_kw)
+
+        # Phase 2: Containment + flow shaping — trim edges, establish flow patterns
+        for _ in range(shape_steps):
+            self.engine.step()
+            if self.engine_name == "mnca":
+                self.engine.world *= self._mnca_containment
+            elif self.engine_name in ("lenia", "smoothlife"):
+                self.engine.world *= self._containment
+            if self.engine_name == "gray_scott":
+                self.engine.U = self._advect(self.engine.U)
+                self.engine.V = self._advect(self.engine.V)
+                np.clip(self.engine.U, 0.0, 1.0, out=self.engine.U)
+                np.clip(self.engine.V, 0.0, 1.0, out=self.engine.V)
+                self.engine.world = self.engine.V
+            elif self.engine_name in ("lenia", "smoothlife", "mnca"):
+                self.engine.world = self._advect(self.engine.world)
+            mass = float(self.engine.world.mean())
+            if mass < 0.002:
+                if use_dense:
+                    self.engine.seed("dense")
+                elif preset:
+                    seed_kw = {}
+                    if "density" in preset:
+                        seed_kw["density"] = preset["density"]
+                    self.engine.seed(preset.get("seed", "random"), **seed_kw)
 
     # -----------------------------------------------------------------------
     # Field construction

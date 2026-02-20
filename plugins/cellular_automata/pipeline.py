@@ -33,6 +33,18 @@ from .presets import PRESETS
 _frame_jpeg = None      # Latest JPEG bytes
 _frame_lock = threading.Lock()
 
+_DEBUG_LOG_PATH = "/workspace/ca_preview_debug.log"
+
+
+def _ca_log(msg):
+    """Module-level logger for CA debug messages."""
+    try:
+        with open(_DEBUG_LOG_PATH, "a") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+            f.flush()
+    except Exception:
+        pass
+
 _PREVIEW_HTML = b'''<!DOCTYPE html>
 <html><head><title>CA Preview</title>
 <style>
@@ -261,6 +273,10 @@ class _CABackgroundSim(threading.Thread):
 
     Pushes every frame to the MJPEG server and keeps the latest frame
     available for Scope's pipeline __call__ to grab instantly.
+
+    Thread safety: sim_lock protects all simulator access. The background
+    thread holds it during render_float(), and _ca_call holds it during
+    set_runtime_params / apply_preset / run_warmup.
     """
 
     def __init__(self, simulator):
@@ -270,10 +286,12 @@ class _CABackgroundSim(threading.Thread):
         self._latest_frame = None   # (H,W,3) float32 [0,1]
         self._running = True
         self._last_time = None
-        self._target_fps = 20      # Background sim target framerate
+        self._target_fps = 15      # Background sim target (lower for CPU budget at 1024)
+        self.sim_lock = threading.Lock()  # Protects simulator access
 
     def run(self):
-        print("[CA] Background simulation thread started")
+        _ca_log("[CA-BG] Background sim started")
+        _count = 0
         while self._running:
             now = time.perf_counter()
             if self._last_time is None:
@@ -284,12 +302,21 @@ class _CABackgroundSim(threading.Thread):
             self._last_time = now
 
             try:
-                frame = self.simulator.render_float(dt)
+                with self.sim_lock:
+                    frame = self.simulator.render_float(dt)
+                _count += 1
+                # Log first 5 frames + every 300th (~20s) for health monitoring
+                if _count <= 5 or _count % 300 == 0:
+                    fm = float(frame.mean())
+                    wm = float(self.simulator.engine.world.mean())
+                    _ca_log(f"[BG] f{_count} dt={dt:.3f} fmean={fm:.3f} wmean={wm:.3f}")
                 with self._frame_lock:
                     self._latest_frame = frame
                 _update_mjpeg_frame(frame)
             except Exception as e:
-                print(f"[CA] Background sim error: {e}")
+                _ca_log(f"[BG] ERROR f{_count}: {e}")
+                import traceback
+                _ca_log(traceback.format_exc())
 
             elapsed = time.perf_counter() - now
             sleep_time = max(0, (1.0 / self._target_fps) - elapsed)
@@ -352,7 +379,7 @@ class PresetEnum(str, enum.Enum):
 
 # ── Shared __init__ and __call__ logic (used by both API branches) ────────
 
-def _ca_init(self, sim_size: int = 512, preset: str = "coral", **kwargs):
+def _ca_init(self, sim_size: int = 1024, preset: str = "coral", **kwargs):
     """Shared __init__ body for both formal and fallback CAPipeline.
 
     Creates CASimulator, runs warmup, and starts the background sim thread.
@@ -364,7 +391,8 @@ def _ca_init(self, sim_size: int = 512, preset: str = "coral", **kwargs):
         preset: Initial preset key (e.g. 'coral', 'medusa').
     """
     self.simulator = CASimulator(
-        preset_key=preset, sim_size=sim_size, warmup=False
+        preset_key=preset, sim_size=sim_size, warmup=False,
+        target_sps=30,  # Lower than viewer's 60 for CPU budget at 1024
     )
     # Run warmup immediately so first frames show developed structure
     self.simulator.run_warmup()
@@ -380,8 +408,8 @@ def _ca_init(self, sim_size: int = 512, preset: str = "coral", **kwargs):
 def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     """Shared __call__ body for both formal and fallback CAPipeline.
 
-    Updates runtime params on the simulator (background thread picks them
-    up on next frame), then grabs the latest frame from the background sim.
+    Applies only CHANGED runtime params to the simulator. The background
+    thread continuously steps and renders — _ca_call just tweaks knobs.
 
     Args:
         prompt: Ignored (text-only pipeline, no prompt needed).
@@ -398,7 +426,7 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     Returns:
         {"video": tensor} where tensor is (1, H, W, 3) float32 [0,1]
     """
-    # --- Read ALL runtime params from kwargs every frame (PLUG-04) ---
+    # --- Read ALL runtime params from kwargs every frame ---
     preset = kwargs.get("preset", None)
     speed = kwargs.get("speed", 1.0)
     hue = kwargs.get("hue", 0.25)
@@ -421,29 +449,45 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     # --- Preset change detection ---
     if preset is not None:
         preset = getattr(preset, 'value', preset)
-    if preset is not None and preset != self.simulator.preset_key:
-        self.simulator.apply_preset(preset)
-        self.simulator.run_warmup()
 
-    # --- Apply runtime params (background thread reads these on next frame) ---
-    self.simulator.set_runtime_params(
-        speed=speed,
-        hue=hue,
-        brightness=brightness,
-        thickness=thickness,
-        reseed=reseed,
-        flow_radial=flow_radial,
-        flow_rotate=flow_rotate,
-        flow_swirl=flow_swirl,
-        flow_bubble=flow_bubble,
-        flow_ring=flow_ring,
-        flow_vortex=flow_vortex,
-        flow_vertical=flow_vertical,
-    )
+    # --- Build dict of only CHANGED params (avoid spamming set_hue_offset every frame) ---
+    if not hasattr(self, '_last_params'):
+        self._last_params = {}
 
-    self.simulator.iridescent.tint_r *= tint_r
-    self.simulator.iridescent.tint_g *= tint_g
-    self.simulator.iridescent.tint_b *= tint_b
+    changed = {}
+    current = {
+        "speed": speed, "hue": hue, "brightness": brightness,
+        "thickness": thickness,
+        "flow_radial": flow_radial, "flow_rotate": flow_rotate,
+        "flow_swirl": flow_swirl, "flow_bubble": flow_bubble,
+        "flow_ring": flow_ring, "flow_vortex": flow_vortex,
+        "flow_vertical": flow_vertical,
+    }
+    for k, v in current.items():
+        if self._last_params.get(k) != v:
+            changed[k] = v
+    self._last_params = current
+
+    # Reseed is always applied when truthy (not tracked)
+    if reseed:
+        changed["reseed"] = True
+
+    # --- Apply only changed params under lock (minimize lock hold time) ---
+    if changed or (preset is not None and preset != self.simulator.preset_key):
+        with self._bg_sim.sim_lock:
+            if preset is not None and preset != self.simulator.preset_key:
+                self.simulator.apply_preset(preset)
+                self.simulator.run_warmup()
+
+            if changed:
+                self.simulator.set_runtime_params(**changed)
+
+            # Tint: apply from kwargs only when user explicitly changed from default.
+            # Otherwise let set_hue_offset (called via hue param) control tint.
+            if tint_r != 1.0 or tint_g != 1.0 or tint_b != 1.0:
+                self.simulator.iridescent.tint_r = tint_r
+                self.simulator.iridescent.tint_g = tint_g
+                self.simulator.iridescent.tint_b = tint_b
 
     # --- Grab latest frame from background sim (no sim work here) ---
     frame_np = self._bg_sim.get_latest_frame()
@@ -484,7 +528,7 @@ if _HAS_SCOPE_API:
 
         # Load-time
         sim_size: int = Field(
-            default=512,
+            default=1024,
             description="Simulation grid resolution",
             json_schema_extra=ui_field_config(
                 order=1, label="Sim Resolution", is_load_param=True,
@@ -591,7 +635,7 @@ if _HAS_SCOPE_API:
         modes = {"video": ModeDefaults(default=True)}
 
         sim_size: int = Field(
-            default=512,
+            default=1024,
             description="Simulation grid resolution",
             json_schema_extra=ui_field_config(
                 order=1, label="Sim Resolution", is_load_param=True,
@@ -706,6 +750,7 @@ else:
                     "panel": "settings",
                     "label": "Sim Resolution",
                     "choices": [512, 1024],
+                    "default": 1024,
                     "is_load_param": True,
                 },
                 # --- Runtime (Controls panel — updates live per-frame) ---

@@ -4,26 +4,34 @@ Cellular Automata Pipeline for DayDream Scope
 Text-only pipeline that generates organic CA organisms as video frames.
 No video input needed — the CA simulation is the video source.
 
+The CA simulation runs in a background thread, continuously generating
+frames for the MJPEG preview. When Krea requests a frame, it grabs
+the latest one from the background sim — zero lag.
+
+Preview is served through Scope's own port 8000 at /api/v1/ca-preview
+so it works through RunPod proxy with zero extra port configuration.
+Fallback: standalone MJPEG server on port 8080 for local dev.
+
 Uses BasePipelineConfig + Pipeline ABC when Scope's formal API is available
 (PLUG-02, PLUG-03). Falls back to plain class for local dev without Scope.
 """
 
+import asyncio
 import enum
 import time
 import threading
 import io
 import torch
 import numpy as np
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from .simulator import CASimulator, FLOW_KEYS
 from .presets import PRESETS
 
 
-# ── MJPEG Preview Server (raw CA output on port 8080) ────────────────────
-# Opens in a second browser tab so you can see what the CA is generating
-# before Krea transforms it. Runs as a daemon thread alongside Scope.
+# ── MJPEG Preview Frame Store ────────────────────────────────────────────
+# Shared frame buffer used by both the Scope route and the fallback server.
 
-_mjpeg_server = None  # Module-level singleton
+_frame_jpeg = None      # Latest JPEG bytes
+_frame_lock = threading.Lock()
 
 _PREVIEW_HTML = b'''<!DOCTYPE html>
 <html><head><title>CA Preview</title>
@@ -37,61 +45,13 @@ img { max-width:100vw; max-height:100vh; object-fit:contain; }
 </style></head>
 <body>
 <span class="label">CA Preview (raw input)</span>
-<img src="/stream">
+<img src="/api/v1/ca-preview/stream">
 </body></html>'''
 
 
-class _MJPEGHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/stream':
-            self.send_response(200)
-            self.send_header('Content-Type',
-                             'multipart/x-mixed-replace; boundary=frame')
-            self.send_header('Cache-Control', 'no-cache')
-            self.end_headers()
-            while True:
-                try:
-                    with self.server.frame_lock:
-                        jpeg = self.server.frame_jpeg
-                    if jpeg:
-                        header = (b'--frame\r\nContent-Type: image/jpeg\r\n'
-                                  b'Content-Length: ' + str(len(jpeg)).encode()
-                                  + b'\r\n\r\n')
-                        self.wfile.write(header + jpeg + b'\r\n')
-                    time.sleep(1.0 / 30)
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    break
-        else:
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
-            self.end_headers()
-            self.wfile.write(_PREVIEW_HTML)
-
-    def log_message(self, *args):
-        pass  # Silence HTTP request logs
-
-
-def _start_mjpeg_server(port=8080):
-    """Start the MJPEG preview server (singleton, idempotent)."""
-    global _mjpeg_server
-    if _mjpeg_server is not None:
-        return
-    try:
-        server = HTTPServer(('0.0.0.0', port), _MJPEGHandler)
-        server.frame_jpeg = None
-        server.frame_lock = threading.Lock()
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        _mjpeg_server = server
-        print(f"[CA] MJPEG preview started on port {port}")
-    except OSError as e:
-        print(f"[CA] MJPEG preview failed: {e}")
-
-
 def _update_mjpeg_frame(frame_np):
-    """Push a new frame to the MJPEG stream (called every render)."""
-    if _mjpeg_server is None:
-        return
+    """Push a new frame to the preview stream (called every render)."""
+    global _frame_jpeg
     try:
         from PIL import Image
         img = Image.fromarray(
@@ -99,10 +59,250 @@ def _update_mjpeg_frame(frame_np):
         )
         buf = io.BytesIO()
         img.save(buf, format='JPEG', quality=85)
-        with _mjpeg_server.frame_lock:
-            _mjpeg_server.frame_jpeg = buf.getvalue()
+        with _frame_lock:
+            _frame_jpeg = buf.getvalue()
     except Exception:
         pass
+
+
+# ── Scope ASGI Interceptor (serves preview on port 8000) ─────────────────
+# Patches Scope's middleware stack build to inject our preview handler at
+# the outermost ASGI layer — before any router or SPA catch-all can
+# swallow the request. Works on the same port and proxy URL, zero config.
+
+_preview_middleware_installed = False
+
+
+async def _serve_preview_html(send):
+    """Serve the CA preview HTML page."""
+    await send({
+        "type": "http.response.start",
+        "status": 200,
+        "headers": [
+            [b"content-type", b"text/html"],
+            [b"cache-control", b"no-cache"],
+        ],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": _PREVIEW_HTML,
+    })
+
+
+async def _serve_preview_stream(receive, send):
+    """Serve the MJPEG stream of raw CA frames."""
+    await send({
+        "type": "http.response.start",
+        "status": 200,
+        "headers": [
+            [b"content-type",
+             b"multipart/x-mixed-replace; boundary=frame"],
+            [b"cache-control", b"no-cache"],
+        ],
+    })
+    disconnected = False
+
+    async def _watch_disconnect():
+        nonlocal disconnected
+        while not disconnected:
+            msg = await receive()
+            if msg.get("type") == "http.disconnect":
+                disconnected = True
+                return
+
+    asyncio.ensure_future(_watch_disconnect())
+    try:
+        while not disconnected:
+            with _frame_lock:
+                jpeg = _frame_jpeg
+            if jpeg:
+                chunk = (b'--frame\r\nContent-Type: image/jpeg\r\n'
+                         b'Content-Length: '
+                         + str(len(jpeg)).encode()
+                         + b'\r\n\r\n' + jpeg + b'\r\n')
+                await send({
+                    "type": "http.response.body",
+                    "body": chunk,
+                    "more_body": True,
+                })
+            await asyncio.sleep(1.0 / 30)
+    except Exception:
+        pass
+
+
+def _install_preview_routes():
+    """Patch Scope's ASGI stack to serve CA preview (idempotent).
+
+    Uses a deferred approach: a background thread waits for the server to
+    fully start, then directly replaces the middleware_stack callable with
+    a wrapper that intercepts /api/v1/ca-preview requests.
+    """
+    global _preview_middleware_installed
+    if _preview_middleware_installed:
+        return
+    _preview_middleware_installed = True  # Prevent duplicate installs
+
+    _log_path = "/workspace/ca_preview_debug.log"
+
+    def _log(msg):
+        with open(_log_path, "a") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+            f.flush()
+
+    _log("_install_preview_routes() called")
+
+    def _deferred_patch():
+        """Wait for server to be ready, then patch the ASGI stack."""
+        _log("Deferred thread started, sleeping 8s...")
+        time.sleep(8)
+        try:
+            _log("Importing scope.server.app...")
+            from scope.server.app import app as scope_app
+            _log(f"Got app: type={type(scope_app).__name__}, "
+                 f"class_mro={[c.__name__ for c in type(scope_app).__mro__]}, "
+                 f"middleware_stack_is_none={scope_app.middleware_stack is None}")
+
+            # Force a middleware stack build if not done yet
+            if scope_app.middleware_stack is None:
+                _log("Building middleware stack...")
+                scope_app.middleware_stack = scope_app.build_middleware_stack()
+                _log(f"Stack built: {type(scope_app.middleware_stack)}")
+
+            _orig_stack = scope_app.middleware_stack
+            _log(f"Original stack type: {type(_orig_stack)}")
+
+            async def _ca_patched_stack(asgi_scope, receive, send):
+                if asgi_scope["type"] == "http":
+                    path = asgi_scope.get("path", "")
+                    if path == "/api/v1/ca-preview":
+                        await _serve_preview_html(send)
+                        return
+                    if path == "/api/v1/ca-preview/stream":
+                        await _serve_preview_stream(receive, send)
+                        return
+                await _orig_stack(asgi_scope, receive, send)
+
+            scope_app.middleware_stack = _ca_patched_stack
+            _log(f"PATCHED! middleware_stack is now: {type(scope_app.middleware_stack)}")
+
+            # Verify the patch sticks
+            time.sleep(1)
+            _log(f"Verify: middleware_stack type={type(scope_app.middleware_stack).__name__}, "
+                 f"is_our_func={scope_app.middleware_stack is _ca_patched_stack}")
+        except Exception as e:
+            import traceback
+            _log(f"FAILED: {e}\n{traceback.format_exc()}")
+            _start_fallback_mjpeg_server()
+
+    threading.Thread(target=_deferred_patch, daemon=True).start()
+    _log("Thread launched")
+
+
+# ── Fallback MJPEG Server (port 8080, local dev only) ────────────────────
+
+_fallback_server = None
+
+
+def _start_fallback_mjpeg_server(port=8080):
+    """Start standalone MJPEG server when Scope routes aren't available."""
+    global _fallback_server
+    if _fallback_server is not None:
+        return
+    try:
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == '/stream':
+                    self.send_response(200)
+                    self.send_header('Content-Type',
+                                     'multipart/x-mixed-replace; boundary=frame')
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.end_headers()
+                    while True:
+                        try:
+                            with _frame_lock:
+                                jpeg = _frame_jpeg
+                            if jpeg:
+                                header = (b'--frame\r\nContent-Type: image/jpeg\r\n'
+                                          b'Content-Length: ' + str(len(jpeg)).encode()
+                                          + b'\r\n\r\n')
+                                self.wfile.write(header + jpeg + b'\r\n')
+                            time.sleep(1.0 / 30)
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            break
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html')
+                    self.end_headers()
+                    # For fallback, point stream URL to local port
+                    html = _PREVIEW_HTML.replace(
+                        b'/api/v1/ca-preview/stream', b'/stream')
+                    self.wfile.write(html)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(('0.0.0.0', port), _Handler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        _fallback_server = server
+        print(f"[CA] Fallback MJPEG preview on port {port}")
+    except OSError as e:
+        print(f"[CA] Fallback MJPEG server failed: {e}")
+
+
+# ── Background CA Simulation Thread ──────────────────────────────────────
+# Runs the CA simulation continuously so the MJPEG preview always has
+# fresh frames, even when no WebRTC session is active.
+
+class _CABackgroundSim(threading.Thread):
+    """Background thread that continuously steps the CA simulation.
+
+    Pushes every frame to the MJPEG server and keeps the latest frame
+    available for Scope's pipeline __call__ to grab instantly.
+    """
+
+    def __init__(self, simulator):
+        super().__init__(daemon=True)
+        self.simulator = simulator
+        self._frame_lock = threading.Lock()
+        self._latest_frame = None   # (H,W,3) float32 [0,1]
+        self._running = True
+        self._last_time = None
+        self._target_fps = 20      # Background sim target framerate
+
+    def run(self):
+        print("[CA] Background simulation thread started")
+        while self._running:
+            now = time.perf_counter()
+            if self._last_time is None:
+                dt = 1.0 / self._target_fps
+            else:
+                dt = now - self._last_time
+            dt = max(0.001, min(dt, 0.1))
+            self._last_time = now
+
+            try:
+                frame = self.simulator.render_float(dt)
+                with self._frame_lock:
+                    self._latest_frame = frame
+                _update_mjpeg_frame(frame)
+            except Exception as e:
+                print(f"[CA] Background sim error: {e}")
+
+            elapsed = time.perf_counter() - now
+            sleep_time = max(0, (1.0 / self._target_fps) - elapsed)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    def get_latest_frame(self):
+        """Return the most recent frame (H,W,3) float32 [0,1] or None."""
+        with self._frame_lock:
+            return self._latest_frame
+
+    def stop(self):
+        self._running = False
 
 # --- Preset choices: all headless-safe engine presets (internal keys) ---
 _PRESET_CHOICES = [
@@ -155,8 +355,9 @@ class PresetEnum(str, enum.Enum):
 def _ca_init(self, sim_size: int = 512, preset: str = "coral", **kwargs):
     """Shared __init__ body for both formal and fallback CAPipeline.
 
-    Creates CASimulator with warmup deferred to first __call__().
-    Plugin loads instantly — no blocking warmup in __init__().
+    Creates CASimulator, runs warmup, and starts the background sim thread.
+    The background thread continuously generates frames for the MJPEG preview
+    so you can see the raw CA output even without an active WebRTC session.
 
     Args:
         sim_size: Simulation grid resolution (512 or 1024).
@@ -165,17 +366,22 @@ def _ca_init(self, sim_size: int = 512, preset: str = "coral", **kwargs):
     self.simulator = CASimulator(
         preset_key=preset, sim_size=sim_size, warmup=False
     )
-    self._warmed_up = False
-    self._last_time = None
-    # Start MJPEG preview server (raw CA output on port 8080)
-    _start_mjpeg_server()
+    # Run warmup immediately so first frames show developed structure
+    self.simulator.run_warmup()
+
+    # Install preview routes on Scope's port 8000 (or fallback to port 8080)
+    _install_preview_routes()
+
+    # Start background simulation thread — preview starts immediately
+    self._bg_sim = _CABackgroundSim(self.simulator)
+    self._bg_sim.start()
 
 
 def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     """Shared __call__ body for both formal and fallback CAPipeline.
 
-    All user-controllable params are read from kwargs every frame.
-    Never stored from __init__().
+    Updates runtime params on the simulator (background thread picks them
+    up on next frame), then grabs the latest frame from the background sim.
 
     Args:
         prompt: Ignored (text-only pipeline, no prompt needed).
@@ -192,13 +398,7 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     Returns:
         {"video": tensor} where tensor is (1, H, W, 3) float32 [0,1]
     """
-    # --- Deferred warmup (runs once on first call, not at plugin load) ---
-    if not self._warmed_up:
-        self.simulator.run_warmup()
-        self._warmed_up = True
-
     # --- Read ALL runtime params from kwargs every frame (PLUG-04) ---
-    # Pydantic defaults match coral preset, so untouched sliders = coral values.
     preset = kwargs.get("preset", None)
     speed = kwargs.get("speed", 1.0)
     hue = kwargs.get("hue", 0.25)
@@ -206,7 +406,6 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     thickness = kwargs.get("thickness", 0.0)
     reseed = kwargs.get("reseed", False)
 
-    # Flow field strengths (defaults match coral preset via Pydantic)
     flow_radial = kwargs.get("flow_radial", -0.10)
     flow_rotate = kwargs.get("flow_rotate", 0.40)
     flow_swirl = kwargs.get("flow_swirl", 0.35)
@@ -215,22 +414,18 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
     flow_vortex = kwargs.get("flow_vortex", 0.25)
     flow_vertical = kwargs.get("flow_vertical", 0.0)
 
-    # Tint RGB multipliers (applied after hue sets base tint)
     tint_r = kwargs.get("tint_r", 1.0)
     tint_g = kwargs.get("tint_g", 1.0)
     tint_b = kwargs.get("tint_b", 1.0)
 
     # --- Preset change detection ---
-    # Handle both PresetEnum and raw string values
     if preset is not None:
         preset = getattr(preset, 'value', preset)
     if preset is not None and preset != self.simulator.preset_key:
         self.simulator.apply_preset(preset)
-        # Re-warmup for new engine (apply_preset skips warmup when
-        # self._warmup is False, but we want warmup after preset switch)
         self.simulator.run_warmup()
 
-    # --- Apply runtime params to simulator ---
+    # --- Apply runtime params (background thread reads these on next frame) ---
     self.simulator.set_runtime_params(
         speed=speed,
         hue=hue,
@@ -246,30 +441,18 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
         flow_vertical=flow_vertical,
     )
 
-    # --- Tint: multiply on top of hue-derived tint (1.0 = no change) ---
     self.simulator.iridescent.tint_r *= tint_r
     self.simulator.iridescent.tint_g *= tint_g
     self.simulator.iridescent.tint_b *= tint_b
 
-    # --- Wall-clock dt for LFO accuracy (PLUG-06) ---
-    now = time.perf_counter()
-    if self._last_time is None:
-        dt = 1.0 / 30.0  # First frame: assume 30fps
-    else:
-        dt = now - self._last_time
-    dt = max(0.001, min(dt, 0.1))  # Clamp to [0.001, 0.1]
-    self._last_time = now
+    # --- Grab latest frame from background sim (no sim work here) ---
+    frame_np = self._bg_sim.get_latest_frame()
+    if frame_np is None:
+        # Background sim hasn't produced a frame yet — return black
+        h = w = self.simulator.sim_size
+        frame_np = np.zeros((h, w, 3), dtype=np.float32)
 
-    # --- Render one frame (PLUG-05) ---
-    frame_np = self.simulator.render_float(dt)  # (H, W, 3) float32 [0,1]
-
-    # Push raw CA frame to MJPEG preview (before Krea transforms it)
-    _update_mjpeg_frame(frame_np)
-
-    # Convert to THWC torch tensor: (1, H, W, 3) float32
-    # .copy() is required: render_float may share internal buffer memory
     tensor = torch.from_numpy(frame_np.copy()).unsqueeze(0)
-
     return {"video": tensor}
 
 

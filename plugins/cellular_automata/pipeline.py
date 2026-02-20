@@ -4,275 +4,30 @@ Cellular Automata Pipeline for DayDream Scope
 Text-only pipeline that generates organic CA organisms as video frames.
 No video input needed — the CA simulation is the video source.
 
-The CA simulation runs in a background thread, continuously generating
-frames for the MJPEG preview. When Krea requests a frame, it grabs
-the latest one from the background sim — zero lag.
-
-Preview is served through Scope's own port 8000 at /api/v1/ca-preview
-so it works through RunPod proxy with zero extra port configuration.
-Fallback: standalone MJPEG server on port 8080 for local dev.
+The CA simulation runs in a background thread at ~15fps. When Krea
+requests a frame via __call__, it grabs the latest one instantly.
 
 Uses BasePipelineConfig + Pipeline ABC when Scope's formal API is available
 (PLUG-02, PLUG-03). Falls back to plain class for local dev without Scope.
 """
 
-import asyncio
 import enum
 import time
 import threading
-import io
 import torch
 import numpy as np
 from .simulator import CASimulator, FLOW_KEYS
 from .presets import PRESETS
 
 
-# ── MJPEG Preview Frame Store ────────────────────────────────────────────
-# Shared frame buffer used by both the Scope route and the fallback server.
-
-_frame_jpeg = None      # Latest JPEG bytes
-_frame_lock = threading.Lock()
-
-_DEBUG_LOG_PATH = "/workspace/ca_preview_debug.log"
-
-
-def _ca_log(msg):
-    """Module-level logger for CA debug messages."""
-    try:
-        with open(_DEBUG_LOG_PATH, "a") as f:
-            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-            f.flush()
-    except Exception:
-        pass
-
-_PREVIEW_HTML = b'''<!DOCTYPE html>
-<html><head><title>CA Preview</title>
-<style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background:#000; display:flex; justify-content:center;
-       align-items:center; height:100vh; overflow:hidden; }
-img { max-width:100vw; max-height:100vh; object-fit:contain; }
-.label { position:fixed; top:12px; left:16px; color:#555;
-         font:13px/1 monospace; pointer-events:none; }
-</style></head>
-<body>
-<span class="label">CA Preview (raw input)</span>
-<img src="/api/v1/ca-preview/stream">
-</body></html>'''
-
-
-def _update_mjpeg_frame(frame_np):
-    """Push a new frame to the preview stream (called every render)."""
-    global _frame_jpeg
-    try:
-        from PIL import Image
-        img = Image.fromarray(
-            (frame_np * 255).clip(0, 255).astype(np.uint8)
-        )
-        buf = io.BytesIO()
-        img.save(buf, format='JPEG', quality=85)
-        with _frame_lock:
-            _frame_jpeg = buf.getvalue()
-    except Exception:
-        pass
-
-
-# ── Scope ASGI Interceptor (serves preview on port 8000) ─────────────────
-# Patches Scope's middleware stack build to inject our preview handler at
-# the outermost ASGI layer — before any router or SPA catch-all can
-# swallow the request. Works on the same port and proxy URL, zero config.
-
-_preview_middleware_installed = False
-
-
-async def _serve_preview_html(send):
-    """Serve the CA preview HTML page."""
-    await send({
-        "type": "http.response.start",
-        "status": 200,
-        "headers": [
-            [b"content-type", b"text/html"],
-            [b"cache-control", b"no-cache"],
-        ],
-    })
-    await send({
-        "type": "http.response.body",
-        "body": _PREVIEW_HTML,
-    })
-
-
-async def _serve_preview_stream(receive, send):
-    """Serve the MJPEG stream of raw CA frames."""
-    await send({
-        "type": "http.response.start",
-        "status": 200,
-        "headers": [
-            [b"content-type",
-             b"multipart/x-mixed-replace; boundary=frame"],
-            [b"cache-control", b"no-cache"],
-        ],
-    })
-    disconnected = False
-
-    async def _watch_disconnect():
-        nonlocal disconnected
-        while not disconnected:
-            msg = await receive()
-            if msg.get("type") == "http.disconnect":
-                disconnected = True
-                return
-
-    asyncio.ensure_future(_watch_disconnect())
-    try:
-        while not disconnected:
-            with _frame_lock:
-                jpeg = _frame_jpeg
-            if jpeg:
-                chunk = (b'--frame\r\nContent-Type: image/jpeg\r\n'
-                         b'Content-Length: '
-                         + str(len(jpeg)).encode()
-                         + b'\r\n\r\n' + jpeg + b'\r\n')
-                await send({
-                    "type": "http.response.body",
-                    "body": chunk,
-                    "more_body": True,
-                })
-            await asyncio.sleep(1.0 / 30)
-    except Exception:
-        pass
-
-
-def _install_preview_routes():
-    """Patch Scope's ASGI stack to serve CA preview (idempotent).
-
-    Uses a deferred approach: a background thread waits for the server to
-    fully start, then directly replaces the middleware_stack callable with
-    a wrapper that intercepts /api/v1/ca-preview requests.
-    """
-    global _preview_middleware_installed
-    if _preview_middleware_installed:
-        return
-    _preview_middleware_installed = True  # Prevent duplicate installs
-
-    _log_path = "/workspace/ca_preview_debug.log"
-
-    def _log(msg):
-        with open(_log_path, "a") as f:
-            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-            f.flush()
-
-    _log("_install_preview_routes() called")
-
-    def _deferred_patch():
-        """Wait for server to be ready, then patch the ASGI stack."""
-        _log("Deferred thread started, sleeping 8s...")
-        time.sleep(8)
-        try:
-            _log("Importing scope.server.app...")
-            from scope.server.app import app as scope_app
-            _log(f"Got app: type={type(scope_app).__name__}, "
-                 f"class_mro={[c.__name__ for c in type(scope_app).__mro__]}, "
-                 f"middleware_stack_is_none={scope_app.middleware_stack is None}")
-
-            # Force a middleware stack build if not done yet
-            if scope_app.middleware_stack is None:
-                _log("Building middleware stack...")
-                scope_app.middleware_stack = scope_app.build_middleware_stack()
-                _log(f"Stack built: {type(scope_app.middleware_stack)}")
-
-            _orig_stack = scope_app.middleware_stack
-            _log(f"Original stack type: {type(_orig_stack)}")
-
-            async def _ca_patched_stack(asgi_scope, receive, send):
-                if asgi_scope["type"] == "http":
-                    path = asgi_scope.get("path", "")
-                    if path == "/api/v1/ca-preview":
-                        await _serve_preview_html(send)
-                        return
-                    if path == "/api/v1/ca-preview/stream":
-                        await _serve_preview_stream(receive, send)
-                        return
-                await _orig_stack(asgi_scope, receive, send)
-
-            scope_app.middleware_stack = _ca_patched_stack
-            _log(f"PATCHED! middleware_stack is now: {type(scope_app.middleware_stack)}")
-
-            # Verify the patch sticks
-            time.sleep(1)
-            _log(f"Verify: middleware_stack type={type(scope_app.middleware_stack).__name__}, "
-                 f"is_our_func={scope_app.middleware_stack is _ca_patched_stack}")
-        except Exception as e:
-            import traceback
-            _log(f"FAILED: {e}\n{traceback.format_exc()}")
-            _start_fallback_mjpeg_server()
-
-    threading.Thread(target=_deferred_patch, daemon=True).start()
-    _log("Thread launched")
-
-
-# ── Fallback MJPEG Server (port 8080, local dev only) ────────────────────
-
-_fallback_server = None
-
-
-def _start_fallback_mjpeg_server(port=8080):
-    """Start standalone MJPEG server when Scope routes aren't available."""
-    global _fallback_server
-    if _fallback_server is not None:
-        return
-    try:
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-
-        class _Handler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path == '/stream':
-                    self.send_response(200)
-                    self.send_header('Content-Type',
-                                     'multipart/x-mixed-replace; boundary=frame')
-                    self.send_header('Cache-Control', 'no-cache')
-                    self.end_headers()
-                    while True:
-                        try:
-                            with _frame_lock:
-                                jpeg = _frame_jpeg
-                            if jpeg:
-                                header = (b'--frame\r\nContent-Type: image/jpeg\r\n'
-                                          b'Content-Length: ' + str(len(jpeg)).encode()
-                                          + b'\r\n\r\n')
-                                self.wfile.write(header + jpeg + b'\r\n')
-                            time.sleep(1.0 / 30)
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            break
-                else:
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html')
-                    self.end_headers()
-                    # For fallback, point stream URL to local port
-                    html = _PREVIEW_HTML.replace(
-                        b'/api/v1/ca-preview/stream', b'/stream')
-                    self.wfile.write(html)
-
-            def log_message(self, *args):
-                pass
-
-        server = HTTPServer(('0.0.0.0', port), _Handler)
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        _fallback_server = server
-        print(f"[CA] Fallback MJPEG preview on port {port}")
-    except OSError as e:
-        print(f"[CA] Fallback MJPEG server failed: {e}")
-
-
 # ── Background CA Simulation Thread ──────────────────────────────────────
-# Runs the CA simulation continuously so the MJPEG preview always has
-# fresh frames, even when no WebRTC session is active.
 
 class _CABackgroundSim(threading.Thread):
     """Background thread that continuously steps the CA simulation.
 
-    Pushes every frame to the MJPEG server and keeps the latest frame
-    available for Scope's pipeline __call__ to grab instantly.
+    Keeps the latest frame available for Scope's pipeline __call__ to
+    grab instantly. Without this, the CA would only advance when Krea
+    requests a frame.
 
     Thread safety: sim_lock protects all simulator access. The background
     thread holds it during render_float(), and _ca_call holds it during
@@ -286,12 +41,10 @@ class _CABackgroundSim(threading.Thread):
         self._latest_frame = None   # (H,W,3) float32 [0,1]
         self._running = True
         self._last_time = None
-        self._target_fps = 15      # Background sim target (lower for CPU budget at 1024)
+        self._target_fps = 15      # Background sim target
         self.sim_lock = threading.Lock()  # Protects simulator access
 
     def run(self):
-        _ca_log("[CA-BG] Background sim started")
-        _count = 0
         while self._running:
             now = time.perf_counter()
             if self._last_time is None:
@@ -304,19 +57,10 @@ class _CABackgroundSim(threading.Thread):
             try:
                 with self.sim_lock:
                     frame = self.simulator.render_float(dt)
-                _count += 1
-                # Log first 5 frames + every 300th (~20s) for health monitoring
-                if _count <= 5 or _count % 300 == 0:
-                    fm = float(frame.mean())
-                    wm = float(self.simulator.engine.world.mean())
-                    _ca_log(f"[BG] f{_count} dt={dt:.3f} fmean={fm:.3f} wmean={wm:.3f}")
                 with self._frame_lock:
                     self._latest_frame = frame
-                _update_mjpeg_frame(frame)
-            except Exception as e:
-                _ca_log(f"[BG] ERROR f{_count}: {e}")
-                import traceback
-                _ca_log(traceback.format_exc())
+            except Exception:
+                pass
 
             elapsed = time.perf_counter() - now
             sleep_time = max(0, (1.0 / self._target_fps) - elapsed)
@@ -330,6 +74,7 @@ class _CABackgroundSim(threading.Thread):
 
     def stop(self):
         self._running = False
+
 
 # --- Preset choices: all headless-safe engine presets (internal keys) ---
 _PRESET_CHOICES = [
@@ -383,8 +128,6 @@ def _ca_init(self, sim_size: int = 1024, preset: str = "coral", **kwargs):
     """Shared __init__ body for both formal and fallback CAPipeline.
 
     Creates CASimulator, runs warmup, and starts the background sim thread.
-    The background thread continuously generates frames for the MJPEG preview
-    so you can see the raw CA output even without an active WebRTC session.
 
     Args:
         sim_size: Simulation grid resolution (512 or 1024).
@@ -397,10 +140,7 @@ def _ca_init(self, sim_size: int = 1024, preset: str = "coral", **kwargs):
     # Run warmup immediately so first frames show developed structure
     self.simulator.run_warmup()
 
-    # Install preview routes on Scope's port 8000 (or fallback to port 8080)
-    _install_preview_routes()
-
-    # Start background simulation thread — preview starts immediately
+    # Start background simulation thread
     self._bg_sim = _CABackgroundSim(self.simulator)
     self._bg_sim.start()
 
@@ -413,15 +153,7 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
 
     Args:
         prompt: Ignored (text-only pipeline, no prompt needed).
-        **kwargs: Runtime parameters from Scope UI:
-            preset (PresetEnum|str): CA preset key
-            speed (float): Simulation speed multiplier
-            hue (float): Hue offset 0-1
-            brightness (float): Brightness multiplier
-            thickness (float): Line dilation thickness
-            reseed (bool): Trigger new organism seed
-            flow_radial..flow_vertical (float): Flow field strengths -1 to 1
-            tint_r, tint_g, tint_b (float): RGB tint multipliers 0-2
+        **kwargs: Runtime parameters from Scope UI.
 
     Returns:
         {"video": tensor} where tensor is (1, H, W, 3) float32 [0,1]
@@ -624,107 +356,6 @@ if _HAS_SCOPE_API:
         __init__ = _ca_init
         __call__ = _ca_call
 
-    # ── Standalone preview pipeline (appears in Pipeline ID dropdown) ──
-
-    class CAPreviewConfig(BasePipelineConfig):
-        pipeline_id = "cellular-automata-preview"
-        pipeline_name = "CA Preview"
-        pipeline_description = "Raw cellular automata output (no AI processing)"
-        supports_prompts = False
-        # Video mode so Scope UI shows controls properly
-        modes = {"video": ModeDefaults(default=True)}
-
-        sim_size: int = Field(
-            default=1024,
-            description="Simulation grid resolution",
-            json_schema_extra=ui_field_config(
-                order=1, label="Sim Resolution", is_load_param=True,
-            ),
-        )
-        preset: PresetEnum = Field(
-            default=PresetEnum.coral,
-            description="CA preset to run",
-            json_schema_extra=ui_field_config(order=1, label="Preset"),
-        )
-        speed: float = Field(
-            default=1.0, ge=0.5, le=5.0,
-            json_schema_extra=ui_field_config(order=2, label="Speed"),
-        )
-        hue: float = Field(
-            default=0.25, ge=0.0, le=1.0,
-            json_schema_extra=ui_field_config(order=3, label="Hue"),
-        )
-        brightness: float = Field(
-            default=1.0, ge=0.1, le=3.0,
-            json_schema_extra=ui_field_config(order=4, label="Brightness"),
-        )
-        thickness: float = Field(
-            default=0.0, ge=0.0, le=20.0,
-            json_schema_extra=ui_field_config(order=5, label="Thickness"),
-        )
-        reseed: bool = Field(
-            default=False,
-            json_schema_extra=ui_field_config(order=6, label="Reseed"),
-        )
-        # Flow field strengths (defaults match coral preset)
-        flow_radial: float = Field(
-            default=-0.10, ge=-1.0, le=1.0,
-            json_schema_extra=ui_field_config(order=10, label="Flow Radial"),
-        )
-        flow_rotate: float = Field(
-            default=0.40, ge=-1.0, le=1.0,
-            json_schema_extra=ui_field_config(order=11, label="Flow Rotate"),
-        )
-        flow_swirl: float = Field(
-            default=0.35, ge=-1.0, le=1.0,
-            json_schema_extra=ui_field_config(order=12, label="Flow Swirl"),
-        )
-        flow_bubble: float = Field(
-            default=0.15, ge=-1.0, le=1.0,
-            json_schema_extra=ui_field_config(order=13, label="Flow Bubble"),
-        )
-        flow_ring: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
-            json_schema_extra=ui_field_config(order=14, label="Flow Ring"),
-        )
-        flow_vortex: float = Field(
-            default=0.25, ge=-1.0, le=1.0,
-            json_schema_extra=ui_field_config(order=15, label="Flow Vortex"),
-        )
-        flow_vertical: float = Field(
-            default=0.0, ge=-1.0, le=1.0,
-            json_schema_extra=ui_field_config(order=16, label="Flow Vertical"),
-        )
-        # Tint RGB multipliers
-        tint_r: float = Field(
-            default=1.0, ge=0.0, le=2.0,
-            json_schema_extra=ui_field_config(order=20, label="Tint R"),
-        )
-        tint_g: float = Field(
-            default=1.0, ge=0.0, le=2.0,
-            json_schema_extra=ui_field_config(order=21, label="Tint G"),
-        )
-        tint_b: float = Field(
-            default=1.0, ge=0.0, le=2.0,
-            json_schema_extra=ui_field_config(order=22, label="Tint B"),
-        )
-
-    class CAPreviewPipeline(Pipeline):
-        """Standalone pipeline for previewing raw CA output."""
-
-        @classmethod
-        def get_config_class(cls):
-            return CAPreviewConfig
-
-        def prepare(self, **kwargs):
-            """Declare video input requirement so Scope UI shows properly.
-            The actual video input is ignored — CA generates its own frames.
-            """
-            return _Requirements(input_size=1)
-
-        __init__ = _ca_init
-        __call__ = _ca_call
-
 else:
     # ── Fallback for local dev without Scope installed ────────────────
 
@@ -736,69 +367,35 @@ else:
 
         @staticmethod
         def ui_field_config():
-            """Configure how parameters appear in Scope UI (PLUG-02 fallback).
-
-            Returns:
-                dict: UI configuration for each parameter.
-                      Load-time params go in 'settings' panel.
-                      Runtime params go in 'controls' panel.
-            """
             return {
-                # --- Load-time (Settings panel — requires pipeline reload) ---
                 "sim_size": {
-                    "order": 1,
-                    "panel": "settings",
-                    "label": "Sim Resolution",
-                    "choices": [512, 1024],
-                    "default": 1024,
-                    "is_load_param": True,
+                    "order": 1, "panel": "settings", "label": "Sim Resolution",
+                    "choices": [512, 1024], "default": 1024, "is_load_param": True,
                 },
-                # --- Runtime (Controls panel — updates live per-frame) ---
                 "preset": {
-                    "order": 1,
-                    "panel": "controls",
-                    "label": "Preset",
+                    "order": 1, "panel": "controls", "label": "Preset",
                     "choices": _PRESET_CHOICES,
                 },
                 "speed": {
-                    "order": 2,
-                    "panel": "controls",
-                    "label": "Speed",
-                    "min": 0.5,
-                    "max": 5.0,
-                    "step": 0.1,
+                    "order": 2, "panel": "controls", "label": "Speed",
+                    "min": 0.5, "max": 5.0, "step": 0.1,
                 },
                 "hue": {
-                    "order": 3,
-                    "panel": "controls",
-                    "label": "Hue",
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
+                    "order": 3, "panel": "controls", "label": "Hue",
+                    "min": 0.0, "max": 1.0, "step": 0.01,
                 },
                 "brightness": {
-                    "order": 4,
-                    "panel": "controls",
-                    "label": "Brightness",
-                    "min": 0.1,
-                    "max": 3.0,
-                    "step": 0.1,
+                    "order": 4, "panel": "controls", "label": "Brightness",
+                    "min": 0.1, "max": 3.0, "step": 0.1,
                 },
                 "thickness": {
-                    "order": 5,
-                    "panel": "controls",
-                    "label": "Thickness",
-                    "min": 0.0,
-                    "max": 20.0,
-                    "step": 0.5,
+                    "order": 5, "panel": "controls", "label": "Thickness",
+                    "min": 0.0, "max": 20.0, "step": 0.5,
                 },
                 "reseed": {
-                    "order": 6,
-                    "panel": "controls",
-                    "label": "Reseed",
+                    "order": 6, "panel": "controls", "label": "Reseed",
                     "type": "toggle",
                 },
-                # Flow field strengths
                 "flow_radial": {
                     "order": 10, "panel": "controls", "label": "Flow Radial",
                     "min": -1.0, "max": 1.0, "step": 0.05,
@@ -827,7 +424,6 @@ else:
                     "order": 16, "panel": "controls", "label": "Flow Vertical",
                     "min": -1.0, "max": 1.0, "step": 0.05,
                 },
-                # Tint RGB multipliers
                 "tint_r": {
                     "order": 20, "panel": "controls", "label": "Tint R",
                     "min": 0.0, "max": 2.0, "step": 0.05,

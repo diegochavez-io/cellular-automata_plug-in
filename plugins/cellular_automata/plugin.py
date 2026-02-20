@@ -27,10 +27,6 @@ if hookimpl is not None:
         register(CAPipeline)
         if CAPreviewPipeline is not None:
             register(CAPreviewPipeline)
-        # Install MJPEG preview middleware on Scope's port 8000 during startup
-        # (before first request, so it's part of the initial middleware stack)
-        from .pipeline import _install_preview_routes
-        _install_preview_routes()
 else:
     def register_pipelines(registry):
         """Called when Scope loads the plugin (simple registry API)."""

@@ -133,6 +133,10 @@ def _ca_init(self, sim_size: int = 1024, preset: str = "coral", **kwargs):
         sim_size: Simulation grid resolution (512 or 1024).
         preset: Initial preset key (e.g. 'coral', 'medusa').
     """
+    # Store target output dimensions from load params (for frame resizing)
+    self._target_h = kwargs.get("height")
+    self._target_w = kwargs.get("width")
+
     self.simulator = CASimulator(
         preset_key=preset, sim_size=sim_size, warmup=False,
         target_sps=30,  # Lower than viewer's 60 for CPU budget at 1024
@@ -228,7 +232,19 @@ def _ca_call(self, prompt: str = "", **kwargs) -> dict:
         h = w = self.simulator.sim_size
         frame_np = np.zeros((h, w, 3), dtype=np.float32)
 
-    tensor = torch.from_numpy(frame_np.copy()).unsqueeze(0)
+    tensor = torch.from_numpy(frame_np.copy()).unsqueeze(0)  # (1, H, W, 3)
+
+    # --- Resize to match Krea RT expected dimensions ---
+    target_h = kwargs.get("height") or getattr(self, '_target_h', None)
+    target_w = kwargs.get("width") or getattr(self, '_target_w', None)
+    if target_h and target_w and (tensor.shape[1] != target_h or tensor.shape[2] != target_w):
+        # interpolate needs NCHW
+        tensor = tensor.permute(0, 3, 1, 2)  # (1, 3, H, W)
+        tensor = torch.nn.functional.interpolate(
+            tensor, size=(target_h, target_w), mode="bilinear", align_corners=False
+        )
+        tensor = tensor.permute(0, 2, 3, 1)  # back to (1, H, W, 3)
+
     return {"video": tensor}
 
 
@@ -345,13 +361,13 @@ if _HAS_SCOPE_API:
             return CAPipelineConfig
 
         def prepare(self, **kwargs):
-            """Declare video input so Scope treats CA as a valid preprocessor.
+            """Return None to signal text-only mode (self-generating frames).
 
-            The actual video input is ignored — CA generates its own frames.
-            This allows CA to appear in the Preprocessor dropdown for pipelines
-            like krea-realtime-video, enabling the chain: CA → Krea RT + LoRAs.
+            CA generates its own frames — no external video input needed.
+            Returning None tells Scope's frame processor to drive the chain
+            autonomously rather than waiting for external input frames.
             """
-            return _Requirements(input_size=1)
+            return None
 
         __init__ = _ca_init
         __call__ = _ca_call
